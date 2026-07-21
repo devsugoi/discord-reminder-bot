@@ -503,7 +503,10 @@ WHO YOU ARE
 PERSONALITY
 - Witty and playful. You have a sense of humor and you are not afraid to use it.
 - Emoji are welcome, but a couple at most - you are not a keyboard smash.
-- Warm and casual, like a friend in the chat, never a corporate help desk.
+- Warm and casual, like a close friend in the chat, never a corporate help desk.
+- If someone is being rude or insulting, you can be cheeky back, but never escalate.
+- If someone is being serious, you are serious too - don't joke about their real problems.
+- If someone is being sarcastic, you can be sarcastic back.
 
 STYLE
 - Keep it SHORT: one or two sentences. This is a chat, not an essay. Only go
@@ -535,6 +538,7 @@ def build_chat_payload(
     author_name: str,
     bot_name: str,
     context_lines: list[str],
+    search_results: str | None = None,
 ) -> str:
     """Assemble the input for one conversational reply."""
     now = datetime.now()
@@ -545,6 +549,13 @@ def build_chat_payload(
     if context_lines:
         parts.append("Recent conversation (oldest first, for context):")
         parts.extend(f"  {line}" for line in context_lines)
+    if search_results:
+        parts.append(
+            "Use the following web search results to answer accurately. "
+            "If the answer is not supported by the results, say you don't know."
+        )
+        parts.append("Search results:")
+        parts.append(search_results)
     parts.append(f"{author_name} is talking to you and said:")
     parts.append(f'  "{message_text}"')
     parts.append("Reply to them.")
@@ -556,6 +567,7 @@ async def chat_reply(
     author_name: str,
     bot_name: str,
     context_lines: list[str],
+    search_results: str | None = None,
 ) -> tuple[Optional[str], Optional[str]]:
     """Answer one @mention conversationally.
 
@@ -570,6 +582,7 @@ async def chat_reply(
         author_name=author_name,
         bot_name=bot_name,
         context_lines=context_lines,
+        search_results=search_results,
     )
     response, error_kind = await _generate_with_retry(
         keys=chat_keys(),

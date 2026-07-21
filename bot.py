@@ -36,6 +36,7 @@ load_dotenv()
 import ai_parser  # noqa: E402
 import calendar_sync  # noqa: E402
 import db  # noqa: E402
+import web_search  # noqa: E402
 from ai_parser import (  # noqa: E402
     CHATBOT_FALLBACK_MODEL,
     CHATBOT_MODEL,
@@ -824,6 +825,81 @@ def strip_own_mention(message: discord.Message) -> str:
     return text.strip()
 
 
+def _looks_like_search_query(question: str) -> bool:
+    text = question.strip()
+    if not text:
+        return False
+    normalized = text.lower()
+    if len(normalized) < 5:
+        return False
+
+    # Ignore obvious reminder/chat requests, which are handled separately.
+    if any(token in normalized for token in ("remind", "reminder", "paalala", "tandaan", "utang", "debt", "bayad", "pay")):
+        return False
+
+    # Ignore casual conversational questions that don't need web search.
+    negative_phrases = (
+        "how are you",
+        "how's it going",
+        "what's up",
+        "what do you think",
+        "what should i",
+        "what should we",
+        "what do i",
+        "what do we",
+        "do you",
+        "can you",
+        "could you",
+        "will you",
+        "would you",
+        "should i",
+        "should we",
+        "is it",
+        "are you",
+        "are we",
+        "did you",
+        "did i",
+        "do i",
+        "do we",
+        "let's",
+    )
+    if any(phrase in normalized for phrase in negative_phrases):
+        return False
+
+    # A direct question mark is a strong signal.
+    if normalized.endswith("?"):
+        return True
+
+    # Common lookup and factual question words in English and Tagalog.
+    if re.search(
+        r"\b(?:when|what|where|who|why|how|which|kelan|ano|sino|saan|bakit|paano|ilan|magkano|alin)\b",
+        normalized,
+    ):
+        if re.search(
+            r"\b(?:when is|when are|what is|what are|where is|where are|who is|who are|why is|why are|how many|how much|how long|which (?:is|are)|kelan|ano|sino|saan|bakit|paano|ilan|magkano|alin)\b",
+            normalized,
+        ):
+            return True
+        if re.match(r"^(?:is|are|does|do|did|can|could|should|would|will|may|might)\b", normalized):
+            return True
+
+    # Natural lookup instructions and factual search phrases.
+    search_phrases = (
+        "search the web",
+        "search online",
+        "search for",
+        "look up",
+        "lookup",
+        "find out",
+        "google ",
+        "research ",
+    )
+    if any(phrase in normalized for phrase in search_phrases):
+        return True
+
+    return False
+
+
 async def handle_mention_detection(message: discord.Message, question: str) -> bool:
     """Act on a reminder or debt someone asked the bot for directly.
 
@@ -954,12 +1030,38 @@ async def handle_chat_mention(message: discord.Message) -> None:
         return
 
     context_lines = await fetch_context_lines(message)
+    search_results = None
+    is_search_query = _looks_like_search_query(question)
+    logger.debug(
+        "Mention %s search detection: is_search_query=%s, question=%r",
+        message.id,
+        is_search_query,
+        question,
+    )
+    if is_search_query:
+        if web_search.search_enabled():
+            search_results, search_error = await web_search.search_web(question)
+            if search_error:
+                logger.debug("Web search for mention %s failed: %s", message.id, search_error)
+            else:
+                logger.info(
+                    "Mention %s included web search results (%d chars)",
+                    message.id,
+                    len(search_results) if search_results else 0,
+                )
+        else:
+            logger.debug(
+                "Mention %s looks like a search query, but web search is not configured or enabled",
+                message.id,
+            )
+
     async with message.channel.typing():  # the little "typing…" dots
         reply, error_kind = await chat_reply(
             message_text=question or "(they pinged you without saying anything)",
             author_name=message.author.display_name,
             bot_name=bot.user.display_name,
             context_lines=context_lines,
+            search_results=search_results,
         )
 
     if error_kind == "quota":

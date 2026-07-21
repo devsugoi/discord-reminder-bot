@@ -173,6 +173,10 @@ All settings live in `.env` (copy `.env.example` and fill it in):
 | `CHATBOT_API_KEY_2`, `_3`, … | empty | Backup chat keys, same rule as above. |
 | `CHATBOT_MODEL` | empty | Model for chat replies — a cheaper/faster one fits well here. Empty = reuse `GEMINI_MODEL`. |
 | `CHATBOT_FALLBACK_MODEL` | empty | Backup model for chat replies. Empty = reuse `GEMINI_FALLBACK_MODEL`. |
+| `WEB_SEARCH_PROVIDER` | empty | Optional live web search provider for conversational @mention lookup questions. Supported: `serpapi`, `google_cse`. |
+| `WEB_SEARCH_API_KEY` | empty | API key for the configured web search provider. |
+| `WEB_SEARCH_ENGINE_ID` | empty | Google Custom Search Engine ID (`cx`) when using `google_cse`. |
+| `WEB_SEARCH_RESULT_COUNT` | `3` | How many search results to include in the prompt. Keep this small. |
 | `CHATBOT_MAX_CALLS_PER_DAY` | `200` | Daily cap for chat replies, separate from `MAX_AI_CALLS_PER_DAY` so chatter can't starve detection. |
 | `CHATBOT_COOLDOWN_SECONDS` | `0` | Seconds between pings per person; `0` = off. Starting value only — `/settings chatbot cooldown` overrides it. |
 | `CONTEXT_MESSAGES` | `8` | Recent messages sent as context with each AI call. `0` disables. |
@@ -229,6 +233,26 @@ depends on. Create another API key (a second key in AI Studio, or one from a
 different Google account for a fully independent quota) and put it in
 `CHATBOT_API_KEY`. Leave it empty and both share `GEMINI_API_KEY` — the daily
 caps stay separate either way.
+
+### Optional web search setup
+
+The bot can use live web search for factual @mention questions like
+"when is hoyofest2026?". This is optional and only works when you set up one of
+these providers in `.env`:
+
+- `WEB_SEARCH_PROVIDER=serpapi`
+  - Get a key at <https://serpapi.com/>.
+  - Set `WEB_SEARCH_API_KEY` to that key.
+  - Leave `WEB_SEARCH_ENGINE_ID` empty.
+- `WEB_SEARCH_PROVIDER=google_cse`
+  - Create a Google Custom Search Engine at
+    <https://cse.google.com/cse/all>.
+  - Add one or more sites or choose to search the whole web.
+  - Copy the `cx` value and set `WEB_SEARCH_ENGINE_ID`.
+  - Set `WEB_SEARCH_API_KEY` to a Google API key with Custom Search enabled.
+
+Keep `WEB_SEARCH_RESULT_COUNT` small (3 is a good default). If `WEB_SEARCH_PROVIDER`
+is empty, the bot will still answer @mentions normally using Gemini chat.
 
 ### Step 5 — Configure and test-run on your PC first
 
