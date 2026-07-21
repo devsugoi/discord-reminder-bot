@@ -1,0 +1,22 @@
+# Secrets - never commit these
+.env
+service_account.json
+# Google service-account keys download with generated names like
+# "gen-lang-client-1234567890-abc123.json" - never commit those either.
+gen-lang-client-*.json
+*service-account*.json
+*serviceaccount*.json
+
+# Database (personal data, back it up separately)
+debts.db
+*.db
+
+# Editor / tooling settings (sftp.json holds the Pi's SSH credentials)
+.vscode/
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/

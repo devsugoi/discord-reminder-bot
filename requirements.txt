@@ -1,0 +1,7 @@
+discord.py>=2.4
+google-genai>=1.0
+python-dotenv>=1.0
+pydantic>=2.0
+# Google Calendar sync (see calendar_sync.py); prebuilt on piwheels for the Pi.
+google-api-python-client>=2.100
+google-auth>=2.20

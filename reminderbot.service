@@ -1,0 +1,26 @@
+# systemd unit for the Discord Reminder Bot.
+#
+# Adjust User= and the two paths if your Pi username or install
+# location differ, then install with:
+#   sudo cp reminderbot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now reminderbot
+#
+# Watch logs live:  journalctl -u reminderbot -f
+
+[Unit]
+Description=Discord Reminder Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/discord_reminder_bot
+EnvironmentFile=-/home/pi/discord_reminder_bot/.env
+ExecStart=/home/pi/discord_reminder_bot/venv/bin/python /home/pi/discord_reminder_bot/bot.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
