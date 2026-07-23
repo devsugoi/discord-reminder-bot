@@ -36,6 +36,7 @@ load_dotenv()
 import ai_parser  # noqa: E402
 import calendar_sync  # noqa: E402
 import db  # noqa: E402
+import smart_memory  # noqa: E402
 import web_search  # noqa: E402
 from ai_parser import (  # noqa: E402
     CHATBOT_FALLBACK_MODEL,
@@ -1207,6 +1208,20 @@ async def handle_chat_mention(message: discord.Message) -> None:
 
     logger.info("Chat reply to %s in channel %s", message.author.name, message.channel.id)
     await say(message, reply)
+
+    # Smart memory: save important information from this conversation
+    # This happens in the background and doesn't affect the user experience
+    try:
+        saved = await smart_memory.save_conversation_memory(
+            user_id=message.author.id,
+            user_message=question or "",
+            bot_reply=reply,
+            author_name=message.author.display_name,
+        )
+        if saved:
+            logger.debug("Saved conversation memory for user %s", message.author.id)
+    except Exception:
+        logger.exception("Failed to save conversation memory (non-critical)")
 
     # Safety net: if the chat AI claims it set a reminder but the detection path
     # didn't catch it (prescan missed it, low confidence, etc.), try to actually

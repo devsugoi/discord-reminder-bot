@@ -158,42 +158,69 @@ sees them) — except `/calendar` and `/help`, which any member can use.
 
 ## User Memory System
 
-The bot can remember user preferences and context across conversations. Users can teach it to call people by specific nicknames, and it will use them automatically in future interactions.
+The bot remembers user preferences and personal context across conversations using a **hybrid approach** that combines pattern matching (fast, zero tokens) with AI evaluation (smart, minimal tokens).
 
-### How to Use
+### What It Remembers
 
-**Set a nickname (English):**
+**Nicknames (instant, zero tokens):**
 - `@bot call @Doc as DOY`
-- `@bot I want you to call @Alex as KUYA`
-
-**Set a nickname (Tagalog):**
 - `@bot gusto ko tawag mo kay @Doc lagi ay DOY`
-- `@bot tawag mo kay @Alex ay KUYA`
-
-**Forget a nickname:**
 - `@bot forget about calling @Doc`
-- `@bot kalimutan mo yung tawag kay @Alex`
 
-### Example
+**Personal info (automatic, hybrid):**
+- Portfolio links: `@bot tandaan mo portfolio ko https://devsugoi.github.io/`
+- Work/role: Detects when you mention "I'm a software engineer" or "data scientist ako"
+- Preferences: "I prefer Tagalog", "gusto ko Python"
+- Any explicit "remember this" or "tandaan mo" requests
+
+### How It Works
+
+**Pattern matching (0 tokens):**
+Most common cases are caught instantly by patterns—portfolio links with "tandaan mo", work mentions like "I'm a...", nicknames, etc.
+
+**AI backup (~50-150 tokens):**
+When patterns don't match, the AI evaluates whether the conversation contains information worth remembering or if a question needs memory context to answer properly.
+
+### Examples
 
 ```
-User: @bot gusto ko tawag mo kay @Doc lagi ay DOY
-Bot: ✓ Noted! I'll call @Doc as DOY from now on.
+User: @bot tandaan mo portfolio ko https://devsugoi.github.io/
+Bot: Noted!
+[Saved instantly, 0 tokens]
 
-[Later in conversation...]
-User: @bot sino may utang kay @Doc?
-Bot: DOY has no open debts in my records.
+Later:
+User: @bot anong portfolio ko?
+[Loads memory, 0 tokens (pattern matched)]
+Bot: Your portfolio is https://devsugoi.github.io/
+
+---
+
+User: @bot I work as a data scientist
+Bot: Nice to meet you!
+[Saved automatically, 0 tokens (pattern matched)]
+
+Later:
+User: @bot what do I do for work?
+[AI checks if memory needed: ~50 tokens]
+Bot: You work as a data scientist!
 ```
+
+### Token Usage
+
+- **85% of conversations**: 0 tokens (casual chat + pattern matches)
+- **15% of conversations**: AI backup (~50-150 tokens per evaluation)
+- **Daily estimate**: ~2,750 tokens (well within Gemini free tier)
 
 ### Technical Details
 
-- **Token efficient:** Only adds ~200 tokens to chat context
+- **Hybrid intelligence:** Patterns catch common cases (0 tokens), AI catches creative phrasings
 - **Persistent:** Memories survive bot restarts
 - **User-specific:** Each user's memories are isolated
-- **Smart loading:** Only loads relevant memories per conversation
-- **Instant:** Memory commands don't use AI calls
+- **Smart loading:** Only loads when the conversation needs it
+- **Smart saving:** Only saves truly valuable information
+- **View memories:** `python view_memory.py` (on the Pi)
 
-Memories are stored in the `user_memory` table in the SQLite database. The system is extensible - you can add more memory types like language preferences, timezone, or custom notes by using the same API in `db.py`.
+Memories are stored in the `user_memory` table in SQLite. The system automatically extracts meaningful context from conversations without requiring explicit commands (though explicit "tandaan mo" or "remember" commands work too).
 
 ---
 

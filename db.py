@@ -617,7 +617,7 @@ def build_user_context(user_id: int, mentioned_user_ids: list[int] | None = None
     memories = []
 
     # Get user's general preferences first
-    all_memories = get_all_user_memories(user_id, limit=15)
+    all_memories = get_all_user_memories(user_id, limit=20)
 
     for mem in all_memories:
         if mem["memory_key"] == "nickname_preference":
@@ -625,6 +625,18 @@ def build_user_context(user_id: int, mentioned_user_ids: list[int] | None = None
             target_id_str = mem["context"]
             if not mentioned_user_ids or int(target_id_str) in mentioned_user_ids:
                 memories.append(f"Call <@{target_id_str}> as '{mem['memory_value']}'")
+        elif mem["memory_key"] == "portfolio_link":
+            memories.append(f"User's portfolio: {mem['memory_value']}")
+        elif mem["memory_key"] == "github_link":
+            memories.append(f"User's GitHub: {mem['memory_value']}")
+        elif mem["memory_key"] == "linkedin_link":
+            memories.append(f"User's LinkedIn: {mem['memory_value']}")
+        elif mem["memory_key"] == "work_link":
+            memories.append(f"User's work link: {mem['memory_value']}")
+        elif mem["memory_key"] == "work_role":
+            memories.append(f"User works as: {mem['memory_value']}")
+        elif mem["memory_key"] == "user_preference":
+            memories.append(f"User prefers: {mem['memory_value']}")
         elif mem["memory_key"] == "language_preference":
             memories.append(f"User prefers {mem['memory_value']} language")
         elif mem["memory_key"] == "formality_level":
@@ -636,5 +648,5 @@ def build_user_context(user_id: int, mentioned_user_ids: list[int] | None = None
     if not memories:
         return ""
 
-    # Hard limit to 15 items to keep token usage reasonable
-    return "User preferences:\n" + "\n".join(f"- {m}" for m in memories[:15])
+    # Hard limit to 20 items to keep token usage reasonable
+    return "User context:\n" + "\n".join(f"- {m}" for m in memories[:20])

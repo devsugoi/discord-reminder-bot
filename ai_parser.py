@@ -587,11 +587,34 @@ async def chat_reply(
       - (None, "busy")  when Gemini stayed overloaded through every retry
       - (None, "error") on any other failure (already logged)
     """
-    # Build user-specific context from memory
+    # Build user-specific context from memory - but only if the message suggests it's needed
     user_context = None
     if user_id:
         import db
-        user_context = db.build_user_context(user_id, mentioned_user_ids)
+        import smart_memory
+
+        # Hybrid approach: Try pattern check first, then ask AI
+        should_load = smart_memory.should_load_memory(message_text)
+
+        if should_load:
+            # Pattern detected need for memory
+            user_context = db.build_user_context(user_id, mentioned_user_ids)
+            if user_context:
+                logger.debug("Loaded user memory context (pattern matched)")
+        else:
+            # Pattern didn't match - ask AI if memory would help
+            # This is a lightweight check (~50 tokens)
+            needs_memory = await smart_memory.ai_should_load_memory(message_text)
+            if needs_memory:
+                user_context = db.build_user_context(user_id, mentioned_user_ids)
+                if user_context:
+                    logger.debug("Loaded user memory context (AI decided)")
+
+        # Always load nickname preferences if users are mentioned
+        if not user_context and mentioned_user_ids:
+            user_context = db.build_user_context(user_id, mentioned_user_ids)
+            if user_context:
+                logger.debug("Loaded user memory context (mentioned users)")
 
     payload = build_chat_payload(
         message_text=message_text,
