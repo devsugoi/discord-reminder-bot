@@ -1119,6 +1119,44 @@ async def handle_chat_mention(message: discord.Message) -> None:
     logger.info("Chat reply to %s in channel %s", message.author.name, message.channel.id)
     await say(message, reply)
 
+    # Safety net: if the chat AI claims it set a reminder but the detection path
+    # didn't catch it (prescan missed it, low confidence, etc.), try to actually
+    # set one now. Look for phrases like "reminder set", "naka-set na", etc.
+    reminder_claim_patterns = [
+        r"reminder\s+(?:set|created|added|scheduled|#\d+)",  # "reminder set", "Reminder #5"
+        r"naka-?\s*set\s+(?:na|ang)\s+(?:reminder|paalala)",  # "naka-set na", "nakaset na"
+        r"(?:set|scheduled)\s+(?:a\s+)?reminder",
+        r"ipaalala\s+(?:ko|kita)",
+        r"noted\s*[—-]\s*reminder",  # "noted —reminder set"
+        r"sige.*reminder",  # "Sige! Reminder #5"
+    ]
+    if any(re.search(pat, reply, re.IGNORECASE) for pat in reminder_claim_patterns):
+        logger.warning(
+            "Chat reply claimed to set a reminder but detection didn't catch it - "
+            "attempting fallback detection for message %s",
+            message.id
+        )
+        # Run detection as a last resort
+        analysis, error_kind = await run_detection(message, text=question, in_hot_window=False)
+        if not error_kind and analysis and analysis.kind == "reminder":
+            if analysis.confidence >= CONFIDENCE_THRESHOLD:
+                await create_requested_reminder(message, analysis)
+                logger.info(
+                    "Fallback detection successfully created reminder for message %s",
+                    message.id
+                )
+            else:
+                logger.warning(
+                    "Fallback detection found reminder but confidence too low: %.2f < %.2f",
+                    analysis.confidence, CONFIDENCE_THRESHOLD
+                )
+        else:
+            logger.warning(
+                "Fallback detection failed to extract reminder from message %s: "
+                "error=%s, kind=%s",
+                message.id, error_kind, analysis.kind if analysis else "none"
+            )
+
 
 async def run_detection(
     message: discord.Message, text: str, in_hot_window: bool
