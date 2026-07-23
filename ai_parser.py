@@ -153,9 +153,11 @@ class ChatAnalysis(BaseModel):
     )
     reminder_due: Optional[str] = Field(
         default=None,
-        description="'YYYY-MM-DD HH:MM' if a time was given, else 'YYYY-MM-DD'. "
-        "For a repeating reminder this is the FIRST time it should fire. "
-        "Leave null if no concrete date can be resolved.",
+        description="STRICT FORMAT REQUIRED: 'YYYY-MM-DD HH:MM' (24-hour time) if a time "
+        "was given, else 'YYYY-MM-DD' for date-only. Examples: '2026-12-24 23:45', "
+        "'2026-07-30'. For a repeating reminder this is the FIRST time it should fire. "
+        "Leave null if no concrete date can be resolved. NEVER use month names, 12-hour "
+        "time, or any other format - only YYYY-MM-DD and optional HH:MM in 24-hour format.",
     )
     reminder_repeat: Optional[Literal["daily", "weekly", "monthly", "yearly"]] = Field(
         default=None,

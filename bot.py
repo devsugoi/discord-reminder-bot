@@ -380,6 +380,8 @@ def parse_due_datetime(raw_value: str | None) -> datetime | None:
     if not raw_value:
         return None
     raw_value = raw_value.strip().replace("T", " ")
+
+    # Primary format: strict ISO that the AI is supposed to produce
     for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
         try:
             return datetime.strptime(raw_value, fmt)
@@ -389,7 +391,40 @@ def parse_due_datetime(raw_value: str | None) -> datetime | None:
         day = datetime.strptime(raw_value, "%Y-%m-%d")
         return day.replace(hour=DEFAULT_REMINDER_HOUR, minute=0)
     except ValueError:
-        return None
+        pass
+
+    # Fallback: common formats the AI sometimes produces despite instructions
+    fallback_formats = [
+        "%B %d, %Y %I:%M%p",      # "December 24, 2050 11:45pm"
+        "%b %d, %Y %I:%M%p",      # "Dec 24, 2050 11:45pm"
+        "%B %d, %Y, %I:%M%p",     # "December 24, 2050, 11:45pm" (comma before time)
+        "%b %d, %Y, %I:%M%p",     # "Dec 24, 2050, 11:45pm"
+        "%B %d, %Y %I:%M %p",     # "December 24, 2050 11:45 pm" (space before am/pm)
+        "%b %d, %Y %I:%M %p",     # "Dec 24, 2050 11:45 pm"
+        "%B %d, %Y",              # "December 24, 2050"
+        "%b %d, %Y",              # "Dec 24, 2050"
+        "%Y-%m-%d %I:%M%p",       # "2050-12-24 11:45pm"
+        "%Y-%m-%d %I:%M %p",      # "2050-12-24 11:45 pm"
+        "%m/%d/%Y %H:%M",         # "12/24/2050 23:45"
+        "%m/%d/%Y",               # "12/24/2050"
+    ]
+
+    for fmt in fallback_formats:
+        try:
+            parsed = datetime.strptime(raw_value, fmt)
+            logger.debug(
+                "Parsed date '%s' using fallback format '%s' (AI should output YYYY-MM-DD)",
+                raw_value, fmt
+            )
+            # Date-only formats need the default hour
+            if parsed.hour == 0 and parsed.minute == 0 and "%H" not in fmt and "%I" not in fmt:
+                parsed = parsed.replace(hour=DEFAULT_REMINDER_HOUR)
+            return parsed
+        except ValueError:
+            pass
+
+    logger.warning("Could not parse reminder date: %r", raw_value)
+    return None
 
 
 # Repeating reminders. Kept to these four because they cover what people
