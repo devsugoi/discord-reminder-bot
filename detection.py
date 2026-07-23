@@ -90,8 +90,8 @@ _REMINDER_STRONG_PATTERNS = [
     r"\bmakalimutan\b",      # baka makalimutan = might forget
     r"\balalahanin\b",       # remember it / keep it in mind
     r"\btandaan\b",          # "tandaan mo" = remember this
-    # -- English --
-    r"\bremind(?:er|ers)?\b",
+    # -- English & Taglish --
+    r"\w*remind\w*",         # remind, reminder, reminders, paremind (Taglish)
     r"\bdon'?t\s+forget\b",
     r"\bremember\s+to\b",
     r"\bnote\s+to\s+self\b",
