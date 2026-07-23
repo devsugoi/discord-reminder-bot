@@ -973,23 +973,29 @@ async def handle_mention_detection(message: discord.Message, question: str) -> b
 
 
 async def create_requested_reminder(
-    message: discord.Message, analysis: ChatAnalysis
+    message: discord.Message, analysis: ChatAnalysis, silent: bool = False
 ) -> bool:
     """Save a reminder someone asked the bot for, and answer them in-channel.
 
     Always returns True: every path here has already replied, so the caller
     should not also spend a chat reply on it.
+
+    Args:
+        message: The Discord message that triggered this
+        analysis: The AI's analysis of what reminder to create
+        silent: If True, don't send a reply (used by fallback detection)
     """
     text = analysis.reminder_text or "(no description)"
     due_moment = parse_due_datetime(analysis.reminder_due)
 
     # Without a date there is nothing to schedule - ask instead of guessing.
     if due_moment is None:
-        await say(
-            message,
-            f"⏰ Sige, pero kailan? Sabihin mo kung kailan ka gustong paalalahanan "
-            f'tungkol sa "{text}", o gamitin mo `/remind add` para sa eksaktong oras.',
-        )
+        if not silent:
+            await say(
+                message,
+                f"⏰ Sige, pero kailan? Sabihin mo kung kailan ka gustong paalalahanan "
+                f'tungkol sa "{text}", o gamitin mo `/remind add` para sa eksaktong oras.',
+            )
         bot.open_or_extend_hot_window(message.channel.id, {message.author.id, OWNER_ID})
         return True
 
@@ -999,12 +1005,13 @@ async def create_requested_reminder(
     if duplicate is not None and duplicate["requester_id"] != message.author.id:
         duplicate = None
     if duplicate is not None:
-        await say(
-            message,
-            f"⏰ May ganito ka na - reminder #{duplicate['id']}: "
-            f"\"{duplicate['reminder_text']}\" sa {duplicate['due_at'].replace('T', ' ')}. "
-            "Gamitin mo `/remind add` na may `force: True` kung gusto mo pa rin ng bago.",
-        )
+        if not silent:
+            await say(
+                message,
+                f"⏰ May ganito ka na - reminder #{duplicate['id']}: "
+                f"\"{duplicate['reminder_text']}\" sa {duplicate['due_at'].replace('T', ' ')}. "
+                "Gamitin mo `/remind add` na may `force: True` kung gusto mo pa rin ng bago.",
+            )
         return True
 
     reminder_id = db.add_reminder(
@@ -1018,15 +1025,17 @@ async def create_requested_reminder(
     )
     repeat_note = f" - then 🔁 {analysis.reminder_repeat}" if analysis.reminder_repeat else ""
     logger.info(
-        "Reminder #%s created from a mention by %s: %s (%s, repeat: %s)",
+        "Reminder #%s created from a mention by %s: %s (%s, repeat: %s)%s",
         reminder_id, message.author.name, text,
         due_moment.strftime("%Y-%m-%d %H:%M"), analysis.reminder_repeat or "once",
+        " (silent fallback)" if silent else "",
     )
-    await say(
-        message,
-        f"⏰ Sige! Reminder #{reminder_id} - "
-        f"{due_moment.strftime('%Y-%m-%d %H:%M')}{repeat_note}: {text}",
-    )
+    if not silent:
+        await say(
+            message,
+            f"⏰ Sige! Reminder #{reminder_id} - "
+            f"{due_moment.strftime('%Y-%m-%d %H:%M')}{repeat_note}: {text}",
+        )
     # Corrections ("sa sabado nalang pala") get caught for a while.
     bot.open_or_extend_hot_window(message.channel.id, {message.author.id, OWNER_ID})
     return True
