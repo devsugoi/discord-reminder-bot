@@ -35,13 +35,14 @@ Runs 24/7 on a Raspberry Pi Zero 2 W (even underclocked to one core) at
 1. [How it works](#how-it-works)
 2. [Examples it understands](#examples-it-understands)
 3. [Commands](#commands)
-4. [Settings reference](#settings-reference)
-5. [Setup guide](#setup-guide)
-6. [Running on the Raspberry Pi](#running-on-the-raspberry-pi)
-7. [Day-2 operations](#day-2-operations)
-8. [Troubleshooting](#troubleshooting)
-9. [Project structure](#project-structure)
-10. [Limitations](#limitations)
+4. [User Memory System](#user-memory-system)
+5. [Settings reference](#settings-reference)
+6. [Setup guide](#setup-guide)
+7. [Running on the Raspberry Pi](#running-on-the-raspberry-pi)
+8. [Day-2 operations](#day-2-operations)
+9. [Troubleshooting](#troubleshooting)
+10. [Project structure](#project-structure)
+11. [Limitations](#limitations)
 
 ---
 
@@ -152,6 +153,49 @@ sees them) — except `/calendar` and `/help`, which any member can use.
 | `/calendar link calendar_id` | **Anyone:** sync this server's events to their own Google Calendar. Share the calendar with the bot's service account first — `/calendar status` shows how. |
 | `/calendar unlink` | **Anyone:** stop syncing and remove the bot-added events from their calendar. |
 | `/calendar status` | **Anyone:** their link status, plus step-by-step setup help. |
+
+---
+
+## User Memory System
+
+The bot can remember user preferences and context across conversations. Users can teach it to call people by specific nicknames, and it will use them automatically in future interactions.
+
+### How to Use
+
+**Set a nickname (English):**
+- `@bot call @Doc as DOY`
+- `@bot I want you to call @Alex as KUYA`
+
+**Set a nickname (Tagalog):**
+- `@bot gusto ko tawag mo kay @Doc lagi ay DOY`
+- `@bot tawag mo kay @Alex ay KUYA`
+
+**Forget a nickname:**
+- `@bot forget about calling @Doc`
+- `@bot kalimutan mo yung tawag kay @Alex`
+
+### Example
+
+```
+User: @bot gusto ko tawag mo kay @Doc lagi ay DOY
+Bot: ✓ Noted! I'll call @Doc as DOY from now on.
+
+[Later in conversation...]
+User: @bot sino may utang kay @Doc?
+Bot: DOY has no open debts in my records.
+```
+
+### Technical Details
+
+- **Token efficient:** Only adds ~200 tokens to chat context
+- **Persistent:** Memories survive bot restarts
+- **User-specific:** Each user's memories are isolated
+- **Smart loading:** Only loads relevant memories per conversation
+- **Instant:** Memory commands don't use AI calls
+
+Memories are stored in the `user_memory` table in the SQLite database. The system is extensible - you can add more memory types like language preferences, timezone, or custom notes by using the same API in `db.py`.
+
+---
 
 ## Settings reference
 

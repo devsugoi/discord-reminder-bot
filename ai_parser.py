@@ -544,6 +544,7 @@ def build_chat_payload(
     bot_name: str,
     context_lines: list[str],
     search_results: str | None = None,
+    user_context: str | None = None,
 ) -> str:
     """Assemble the input for one conversational reply."""
     now = datetime.now()
@@ -551,6 +552,8 @@ def build_chat_payload(
         f"Today: {now.strftime('%Y-%m-%d')} ({now.strftime('%A')}), local time {now.strftime('%H:%M')}",
         f"Your name in this server: {bot_name}",
     ]
+    if user_context:
+        parts.append(user_context)
     if context_lines:
         parts.append("Recent conversation (oldest first, for context):")
         parts.extend(f"  {line}" for line in context_lines)
@@ -573,6 +576,8 @@ async def chat_reply(
     bot_name: str,
     context_lines: list[str],
     search_results: str | None = None,
+    user_id: int | None = None,
+    mentioned_user_ids: list[int] | None = None,
 ) -> tuple[Optional[str], Optional[str]]:
     """Answer one @mention conversationally.
 
@@ -582,12 +587,19 @@ async def chat_reply(
       - (None, "busy")  when Gemini stayed overloaded through every retry
       - (None, "error") on any other failure (already logged)
     """
+    # Build user-specific context from memory
+    user_context = None
+    if user_id:
+        import db
+        user_context = db.build_user_context(user_id, mentioned_user_ids)
+
     payload = build_chat_payload(
         message_text=message_text,
         author_name=author_name,
         bot_name=bot_name,
         context_lines=context_lines,
         search_results=search_results,
+        user_context=user_context,
     )
     response, error_kind = await _generate_with_retry(
         keys=chat_keys(),

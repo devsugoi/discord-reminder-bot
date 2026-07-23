@@ -118,6 +118,17 @@ def init() -> None:
                 PRIMARY KEY (discord_event_id, calendar_id)
             )"""
         )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS user_memory (
+                user_id INTEGER NOT NULL,
+                memory_key TEXT NOT NULL,
+                memory_value TEXT NOT NULL,
+                context TEXT NOT NULL DEFAULT '',  -- optional: what this applies to (e.g., target user_id for nicknames)
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, memory_key, context)
+            )"""
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -533,3 +544,97 @@ def event_syncs_for_calendar(calendar_id: str) -> list[sqlite3.Row]:
 def all_event_syncs() -> list[sqlite3.Row]:
     with _connect() as conn:
         return conn.execute("SELECT * FROM event_sync").fetchall()
+
+
+# ---------------------------------------------------------------------------
+# User Memory (context, preferences, nicknames)
+# ---------------------------------------------------------------------------
+
+def save_user_memory(
+    user_id: int,
+    memory_key: str,
+    memory_value: str,
+    context: str = ""
+) -> None:
+    """Store or update a user-specific memory.
+
+    Args:
+        user_id: Discord user ID who owns this memory
+        memory_key: Type of memory (e.g., "nickname_preference", "language_preference")
+        memory_value: The actual value (e.g., "DOY", "Tagalog")
+        context: Optional context (e.g., target user_id for nicknames)
+    """
+    with _connect() as conn:
+        now = _now_iso()
+        conn.execute(
+            """INSERT INTO user_memory (user_id, memory_key, memory_value, context, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, memory_key, context) DO UPDATE SET
+                 memory_value = excluded.memory_value,
+                 updated_at = excluded.updated_at""",
+            (user_id, memory_key, memory_value, context, now, now),
+        )
+
+
+def get_user_memory(user_id: int, memory_key: str, context: str = "") -> str | None:
+    """Retrieve a specific memory for a user."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT memory_value FROM user_memory WHERE user_id = ? AND memory_key = ? AND context = ?",
+            (user_id, memory_key, context),
+        ).fetchone()
+        return row["memory_value"] if row else None
+
+
+def get_all_user_memories(user_id: int, limit: int = 20) -> list[sqlite3.Row]:
+    """Get recent memories for a user (limited to save tokens).
+
+    Returns most recently updated memories first.
+    """
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT * FROM user_memory WHERE user_id = ? ORDER BY updated_at DESC LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
+
+
+def delete_user_memory(user_id: int, memory_key: str, context: str = "") -> bool:
+    """Delete a specific memory. Returns True if something was deleted."""
+    with _connect() as conn:
+        cursor = conn.execute(
+            "DELETE FROM user_memory WHERE user_id = ? AND memory_key = ? AND context = ?",
+            (user_id, memory_key, context),
+        )
+        return cursor.rowcount > 0
+
+
+def build_user_context(user_id: int, mentioned_user_ids: list[int] | None = None) -> str:
+    """Build a compact context string from relevant memories.
+
+    Only includes memories relevant to the current conversation to minimize tokens.
+    Returns empty string if no relevant memories exist.
+    """
+    memories = []
+
+    # Get user's general preferences first
+    all_memories = get_all_user_memories(user_id, limit=15)
+
+    for mem in all_memories:
+        if mem["memory_key"] == "nickname_preference":
+            # Only include nickname if that user is mentioned in this conversation
+            target_id_str = mem["context"]
+            if not mentioned_user_ids or int(target_id_str) in mentioned_user_ids:
+                memories.append(f"Call <@{target_id_str}> as '{mem['memory_value']}'")
+        elif mem["memory_key"] == "language_preference":
+            memories.append(f"User prefers {mem['memory_value']} language")
+        elif mem["memory_key"] == "formality_level":
+            memories.append(f"Use {mem['memory_value']} tone with this user")
+        elif mem["memory_key"] == "custom_note":
+            # Generic notes about the user's preferences or context
+            memories.append(mem["memory_value"])
+
+    if not memories:
+        return ""
+
+    # Hard limit to 15 items to keep token usage reasonable
+    return "User preferences:\n" + "\n".join(f"- {m}" for m in memories[:15])

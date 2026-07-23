@@ -1041,9 +1041,84 @@ async def create_requested_reminder(
     return True
 
 
+async def handle_memory_command(message: discord.Message, text: str) -> bool:
+    """Process memory-related commands like nickname changes.
+
+    Returns True if this was a memory command (fully handled).
+    """
+    # Pattern: "call @user as NAME" or "tawag kay @user ay NAME"
+    # Supports both English and Tagalog variations
+    patterns = [
+        r"(?:call|tawag\s+(?:mo\s+)?(?:kay|sa))\s+<@!?(\d+)>\s+(?:as|ay|is|ng|na)\s+['\"]?(\w+)['\"]?",
+        r"(?:gusto\s+ko|i\s+want|sana)\s+(?:tawag|call)\s+(?:mo\s+)?(?:kay|sa|mo\s+si)?\s*<@!?(\d+)>\s+(?:ay|as|is|ng|na)\s+['\"]?(\w+)['\"]?",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            target_user_id = int(match.group(1))
+            nickname = match.group(2).strip().strip('"\'').upper()
+
+            # Save the memory
+            db.save_user_memory(
+                user_id=message.author.id,
+                memory_key="nickname_preference",
+                memory_value=nickname,
+                context=str(target_user_id)
+            )
+
+            try:
+                target_user = await bot.fetch_user(target_user_id)
+                await say(message,
+                    f"✓ Noted! I'll call {target_user.mention} as **{nickname}** from now on.")
+            except:
+                await say(message,
+                    f"✓ Noted! I'll call that person as **{nickname}** from now on.")
+
+            logger.info(
+                "Memory saved: user %s wants %s called '%s'",
+                message.author.id, target_user_id, nickname
+            )
+            return True
+
+    # Pattern: "forget about calling @user as NAME" or similar
+    forget_patterns = [
+        r"forget\s+(?:about\s+)?(?:calling|tawag)\s+(?:kay\s+)?<@!?(\d+)>",
+        r"kalimutan\s+(?:mo\s+)?(?:yung\s+)?(?:tawag|pangalan)\s+(?:kay\s+)?<@!?(\d+)>",
+        r"(?:stop|huwag\s+na)\s+(?:calling|tawag)\s+(?:kay\s+)?<@!?(\d+)>",
+    ]
+
+    for pattern in forget_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            target_user_id = int(match.group(1))
+            deleted = db.delete_user_memory(
+                message.author.id,
+                "nickname_preference",
+                str(target_user_id)
+            )
+
+            if deleted:
+                await say(message, "✓ Forgotten! I'll use their regular name now.")
+            else:
+                await say(message, "I don't have any special name saved for that person.")
+
+            logger.info(
+                "Memory deleted: user %s removed nickname for %s",
+                message.author.id, target_user_id
+            )
+            return True
+
+    return False
+
+
 async def handle_chat_mention(message: discord.Message) -> None:
     """Answer an @mention: act on it if it's a request, else chat back."""
     question = strip_own_mention(message)
+
+    # Check for memory commands BEFORE detection (these are instant, no AI needed)
+    if await handle_memory_command(message, question):
+        return
 
     # A reminder or debt asked of us directly is a request, not conversation.
     # This runs before the cooldown because it is real work, not chatter, and
@@ -1100,12 +1175,17 @@ async def handle_chat_mention(message: discord.Message) -> None:
             )
 
     async with message.channel.typing():  # the little "typing…" dots
+        # Extract mentioned user IDs for context
+        mentioned_user_ids = [user.id for user in message.mentions if user.id != bot.user.id]
+
         reply, error_kind = await chat_reply(
             message_text=question or "(they pinged you without saying anything)",
             author_name=message.author.display_name,
             bot_name=bot.user.display_name,
             context_lines=context_lines,
             search_results=search_results,
+            user_id=message.author.id,
+            mentioned_user_ids=mentioned_user_ids,
         )
 
     if error_kind == "quota":
