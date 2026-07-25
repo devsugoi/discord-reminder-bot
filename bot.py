@@ -839,13 +839,20 @@ def is_chat_trigger(message: discord.Message) -> bool:
     return isinstance(referenced, discord.Message) and referenced.author.id == bot.user.id
 
 
-async def say(message: discord.Message, text: str) -> None:
-    """Reply in the channel, truncated to Discord's limit, pinging nobody.
+async def say(
+    message: discord.Message,
+    text: str,
+    allowed_mentions: discord.AllowedMentions | None = None,
+) -> None:
+    """Reply in the channel, truncated to Discord's limit.
 
-    AllowedMentions.none() matters here: the text comes from the AI, so
-    without it someone could talk the bot into @everyone-ing the server.
+    If allowed_mentions is omitted, block all mentions by default. This keeps
+    AI-generated replies from pinging arbitrary users or roles unless the
+    original message explicitly mentioned them.
     """
-    await message.reply(text[:2000], allowed_mentions=discord.AllowedMentions.none())
+    if allowed_mentions is None:
+        allowed_mentions = discord.AllowedMentions.none()
+    await message.reply(text[:2000], allowed_mentions=allowed_mentions)
 
 
 def strip_own_mention(message: discord.Message) -> str:
@@ -1176,8 +1183,14 @@ async def handle_chat_mention(message: discord.Message) -> None:
             )
 
     async with message.channel.typing():  # the little "typing…" dots
-        # Extract mentioned user IDs for context
-        mentioned_user_ids = [user.id for user in message.mentions if user.id != bot.user.id]
+        # Extract mentioned user IDs for context and build a safe mention list.
+        mentioned_users = [user for user in message.mentions if user.id != bot.user.id]
+        mentioned_user_ids = [user.id for user in mentioned_users]
+        allowed_mentions = (
+            discord.AllowedMentions(users=mentioned_users)
+            if mentioned_users
+            else None
+        )
 
         reply, error_kind = await chat_reply(
             message_text=question or "(they pinged you without saying anything)",
@@ -1196,18 +1209,18 @@ async def handle_chat_mention(message: discord.Message) -> None:
             "are paused (it resets daily, midnight US Pacific time). Detection, "
             "commands, and scheduled reminders still work normally.",
         )
-        await say(message, "😵‍💫 my head's spinning right now - give me a minute!")
+        await say(message, "😵‍💫 my head's spinning right now - give me a minute!", allowed_mentions=allowed_mentions)
         return
     if error_kind == "busy":
         # Google's side is overloaded, not our bug - say so honestly.
-        await say(message, "🧠 my brain's lagging right now - try me again in a sec!")
+        await say(message, "🧠 my brain's lagging right now - try me again in a sec!", allowed_mentions=allowed_mentions)
         return
     if error_kind or not reply:
-        await say(message, "⚠️ my brain glitched - try that again?")
+        await say(message, "⚠️ my brain glitched - try that again?", allowed_mentions=allowed_mentions)
         return
 
     logger.info("Chat reply to %s in channel %s", message.author.name, message.channel.id)
-    await say(message, reply)
+    await say(message, reply, allowed_mentions=allowed_mentions)
 
     # Smart memory: save important information from this conversation
     # This happens in the background and doesn't affect the user experience
