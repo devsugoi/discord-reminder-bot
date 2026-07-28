@@ -273,6 +273,7 @@ All settings live in `.env` (copy `.env.example` and fill it in):
 | `MAX_FOLLOWUPS_PER_WINDOW` | `10` | Cap on keyword-less checks per window. |
 | `DEFAULT_CURRENCY` | `₱` | Assumed when amounts have no symbol. |
 | `DEFAULT_REMINDER_HOUR` | `9` | Delivery hour for date-only reminders. |
+| `CUSTOM_SYSTEM_PROMPT` | empty | Extra instructions tacked onto the bot's AI system prompts for both detection and chat. Use it to dial in personality, tone, rules, or anything else you want the bot to know — no code changes needed. |
 | `LOG_LEVEL` | `INFO` | `DEBUG` shows every detection decision. |
 | `DB_PATH` | `debts.db` | Where the SQLite file lives. |
 | `GOOGLE_SERVICE_ACCOUNT_FILE` | `service_account.json` | Google service-account key file. The file *existing* is what switches calendar sync on. |

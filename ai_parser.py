@@ -65,6 +65,10 @@ def _api_models(prefix: str) -> list[str]:
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 DEFAULT_CURRENCY = os.getenv("DEFAULT_CURRENCY", "₱")
 
+# Optional custom system prompt appended to both detection and chatbot instructions.
+# Set this in .env to tweak how the bot behaves without touching the code.
+CUSTOM_SYSTEM_PROMPT = os.getenv("CUSTOM_SYSTEM_PROMPT", "").strip()
+
 # Chat replies can run on their own model - usually a cheaper/faster one, since
 # chatting is the higher-volume path. Empty falls back to the detection model.
 CHATBOT_MODEL = os.getenv("CHATBOT_MODEL", "").strip() or GEMINI_MODEL
@@ -308,6 +312,8 @@ If the input notes the message arrived during a "hot window" (an ongoing money/r
 conversation), it may have no keywords at all - decide from the context whether it
 continues or corrects that conversation; if it is unrelated chatter, answer "none"."""
 
+if CUSTOM_SYSTEM_PROMPT:
+    SYSTEM_PROMPT += "\n\n" + CUSTOM_SYSTEM_PROMPT
 
 # ---------------------------------------------------------------------------
 # Shared plumbing: one retrying call used by both detection and chat
@@ -592,6 +598,11 @@ HONESTY
   one. Those are the only commands you ever mention.
 - When someone asks you for a reminder but gives no day or time, ask them when -
   you cannot set one without it."""
+
+if CUSTOM_SYSTEM_PROMPT:
+    CHATBOT_SYSTEM_PROMPT += "\n\n" + CUSTOM_SYSTEM_PROMPT
+    # IMAGE_VISION_SYSTEM_PROMPT inherits from CHATBOT_SYSTEM_PROMPT, so it
+    # already includes the custom prompt via the += above.
 
 # Variant used when the user also sends an image (photo, screenshot, meme, etc.).
 # The persona and rules stay the same, but image-description guidance is added
