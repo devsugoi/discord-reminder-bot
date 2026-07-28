@@ -22,34 +22,8 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger("reminderbot.ai")
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
-DEFAULT_CURRENCY = os.getenv("DEFAULT_CURRENCY", "₱")
-
-# Chat replies can run on their own model - usually a cheaper/faster one, since
-# chatting is the higher-volume path. Empty falls back to the detection model.
-CHATBOT_MODEL = os.getenv("CHATBOT_MODEL", "").strip() or GEMINI_MODEL
-
-# Backup models, used automatically when the ones above are overloaded (503) or
-# have been retired (404). Google's bigger Flash models get oversubscribed on
-# the free tier, so the default backup is a lighter one that stays reachable.
-# Set to empty to switch the fallback off.
-# Supports multiple fallbacks: GEMINI_FALLBACK_MODEL, GEMINI_FALLBACK_MODEL_2, etc.
-GEMINI_FALLBACK_MODELS = _api_models("GEMINI_FALLBACK_MODEL")
-CHATBOT_FALLBACK_MODELS = _api_models("CHATBOT_FALLBACK_MODEL") or GEMINI_FALLBACK_MODELS
-
 # How many numbered backup keys/models to look for (GEMINI_API_KEY_2 ... _20, GEMINI_MODEL_2 ... _20).
 _MAX_BACKUP = 20
-
-# Clients are created lazily and cached per key, so importing this module never
-# needs a key (helps testing) - only the first real AI call does.
-_clients: dict[str, genai.Client] = {}
-
-# A key that answered 429 is parked for a while so later calls skip straight to
-# the next one instead of re-hitting a quota that is already gone. Gemini's
-# daily quota resets at midnight US Pacific, but 429 can also be a short
-# per-minute burst limit, so an hour is a reasonable middle ground.
-_KEY_COOLDOWN_MINUTES = 60
-_key_exhausted_until: dict[str, datetime] = {}
 
 
 def _api_keys(prefix: str) -> list[str]:
@@ -86,6 +60,33 @@ def _api_models(prefix: str) -> list[str]:
         if value and value not in models:
             models.append(value)
     return models
+
+
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+DEFAULT_CURRENCY = os.getenv("DEFAULT_CURRENCY", "₱")
+
+# Chat replies can run on their own model - usually a cheaper/faster one, since
+# chatting is the higher-volume path. Empty falls back to the detection model.
+CHATBOT_MODEL = os.getenv("CHATBOT_MODEL", "").strip() or GEMINI_MODEL
+
+# Backup models, used automatically when the ones above are overloaded (503) or
+# have been retired (404). Google's bigger Flash models get oversubscribed on
+# the free tier, so the default backup is a lighter one that stays reachable.
+# Set to empty to switch the fallback off.
+# Supports multiple fallbacks: GEMINI_FALLBACK_MODEL, GEMINI_FALLBACK_MODEL_2, etc.
+GEMINI_FALLBACK_MODELS = _api_models("GEMINI_FALLBACK_MODEL")
+CHATBOT_FALLBACK_MODELS = _api_models("CHATBOT_FALLBACK_MODEL") or GEMINI_FALLBACK_MODELS
+
+# Clients are created lazily and cached per key, so importing this module never
+# needs a key (helps testing) - only the first real AI call does.
+_clients: dict[str, genai.Client] = {}
+
+# A key that answered 429 is parked for a while so later calls skip straight to
+# the next one instead of re-hitting a quota that is already gone. Gemini's
+# daily quota resets at midnight US Pacific, but 429 can also be a short
+# per-minute burst limit, so an hour is a reasonable middle ground.
+_KEY_COOLDOWN_MINUTES = 60
+_key_exhausted_until: dict[str, datetime] = {}
 
 
 def detection_keys() -> list[str]:
@@ -660,9 +661,32 @@ async def chat_reply(
 
     reply = (response.text or "").strip()
     if not reply:
-        # Usually a safety block or a hit max_output_tokens with nothing usable.
-        logger.warning("Gemini returned an empty chat reply")
-        return None, "error"
+        # Check if this might be a safety block by looking at safety ratings
+        safety_feedback = getattr(response, "prompt_feedback", None)
+        if safety_feedback and hasattr(safety_feedback, "block_reason"):
+            logger.warning(
+                "Gemini blocked response due to safety concerns: %s",
+                safety_feedback.block_reason
+            )
+            return None, "safety"
+        
+        # Check if we hit token limits
+        usage_metadata = getattr(response, "usage_metadata", None)
+        if usage_metadata and hasattr(usage_metadata, "candidates_token_count"):
+            if usage_metadata.candidates_token_count >= 400:  # matches max_output_tokens
+                logger.warning(
+                    "Gemini response was cut off due to token limit: %d tokens used",
+                    usage_metadata.candidates_token_count
+                )
+                return None, "token_limit"
+        
+        # Generic empty response
+        logger.warning(
+            "Gemini returned an empty chat reply. Feedback: %s, Usage: %s",
+            safety_feedback if "safety_feedback" in locals() else "None",
+            usage_metadata if "usage_metadata" in locals() else "None"
+        )
+        return None, "empty"
 
     logger.debug("Chat reply: %r", reply[:200])
     return reply, None

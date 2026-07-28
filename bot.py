@@ -1202,13 +1202,12 @@ async def handle_chat_mention(message: discord.Message) -> None:
             user_id=message.author.id,
             mentioned_user_ids=mentioned_user_ids,
         )
-
     if error_kind == "quota":
         await bot.notify_owner_once_today(
             "chat_quota",
             "🤖 The chatbot's AI quota is exhausted for now, so @mention replies "
             "are paused (it resets daily, midnight US Pacific time). Detection, "
-            "commands, and scheduled reminders still work normally.",
+            "commands, and scheduled reminders still work normally."
         )
         await say(message, "😵‍💫 my head's spinning right now - give me a minute!", allowed_mentions=allowed_mentions)
         return
@@ -1216,9 +1215,47 @@ async def handle_chat_mention(message: discord.Message) -> None:
         # Google's side is overloaded, not our bug - say so honestly.
         await say(message, "🧠 my brain's lagging right now - try me again in a sec!", allowed_mentions=allowed_mentions)
         return
-    if error_kind or not reply:
-        await say(message, "⚠️ my brain glitched - try that again?", allowed_mentions=allowed_mentions)
+    if error_kind == "safety":
+        # Gemini's safety filters blocked the response
+        await bot.notify_owner_once_today(
+            "chat_safety_block",
+            "🤖 The chatbot's response was blocked by safety filters. This can happen with certain topics or language combinations."
+        )
+        await say(message, "😔 I can't respond to that due to safety guidelines. Let's talk about something else!", allowed_mentions=allowed_mentions)
         return
+    if error_kind == "token_limit":
+        # Gemini hit token limits
+        await bot.notify_owner_once_today(
+            "chat_token_limit",
+            "🤖 The chatbot's response was cut off due to length limits. Consider asking a more specific question."
+        )
+        await say(message, "🤔 My response got too long and got cut off. Could you ask a more specific question?", allowed_mentions=allowed_mentions)
+        return
+    if error_kind == "empty":
+        # Generic empty response from Gemini
+        await bot.notify_owner_once_today(
+            "chat_empty_reply",
+            "🤖 The chatbot received an empty response from Gemini (safety filters blocked or empty generation)."
+        )
+        await say(message, "🤔 my thoughts came up empty - let me try thinking about that differently!", allowed_mentions=allowed_mentions)
+        return
+    if error_kind == "error":
+        # This covers quota errors and other failures from _generate_with_retry
+        await bot.notify_owner_once_today(
+            "chat_quota_or_error",
+            "🤖 The chatbot encountered an error (quota exceeded or API issue). Detection and other functions continue to work."
+        )
+        await say(message, "😵‍💫 my head's spinning right now - give me a minute!", allowed_mentions=allowed_mentions)
+        return
+    # Fallback for any unhandled error cases
+    if error_kind or not reply:
+        await bot.notify_owner_once_today(
+            "chat_unhandled_error",
+            f"🤖 Unhandled chat error: error_kind={error_kind}, reply_empty={not reply if reply is not None else 'None'}"
+        )
+        await say(message, "⚠️ Something unexpected happened - let's try again!", allowed_mentions=allowed_mentions)
+        return
+
 
     logger.info("Chat reply to %s in channel %s", message.author.name, message.channel.id)
     await say(message, reply, allowed_mentions=allowed_mentions)
