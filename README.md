@@ -1,4 +1,4 @@
-# Reminder Bot ⏰💰
+# Reminder Bot ⏰💰🎉
 
 A private assistant bot for your Discord server that:
 
@@ -12,6 +12,10 @@ A private assistant bot for your Discord server that:
   land on your Google Calendar, and your friends can link their own with
   `/calendar link`. Edits and cancellations in Discord follow automatically.
   (This part needs no confirmations — server events are explicit, structured data.)
+- **Runs raffles and giveaways** — create, join, and manage raffles with virtual
+  currency, enjoy 3-second spinning wheel animations with influencer-style
+  presentation before winner announcements, and use role-based auto-join for
+  automatic participant addition.
 - **Chats back when you @mention it** — ask it anything and it answers right in the
   channel, with a bit of personality. It ignores `@everyone`, can be muted per
   channel, and can run on its own API key so chatting never eats the detection quota.
@@ -126,11 +130,16 @@ fails silently, and commands/reminders keep working without AI.
 | "@bot paalalahanan mo ko" *(no date)* | It asks you when — nothing is saved |
 | "utang na loob, tulungan mo naman ako" | Nothing — figurative, not money |
 | "bente lang utang ko sayo" | New debt: ₱20 (colloquial number understood) |
+| "let's raffle off this game code for 500 pesos" | New raffle: game code, ₱500 prize (creator auto-joins) |
+| "@bot let's start a giveaway with nitro prize, 200 php prize" | New raffle: nitro prize, ₱200 prize (joining is free!) |
+| "count me in for the raffle" | Joins active raffle in this channel |
+| "time's up, let's pick a winner" | Ends raffle with 3-wheel spin animation ("SPINNING THE WHEEL*", "*ALMOST THERE*", "*AND THE WINNER IS*") and announces winner with hype messages (if you're creator) |
+| "sige ako" | Joins raffle (Tagalog for "count me in") |
 
 ## Commands
 
 All commands are **owner-only** and replies are **ephemeral** (only the caller
-sees them) — except `/calendar` and `/help`, which any member can use.
+sees them) — except `/calendar`, `/help`, and `/raffle` commands, which any member can use.
 
 | Command | What it does |
 |---|---|
@@ -153,6 +162,15 @@ sees them) — except `/calendar` and `/help`, which any member can use.
 | `/calendar link calendar_id` | **Anyone:** sync this server's events to their own Google Calendar. Share the calendar with the bot's service account first — `/calendar status` shows how. |
 | `/calendar unlink` | **Anyone:** stop syncing and remove the bot-added events from their calendar. |
 | `/calendar status` | **Anyone:** their link status, plus step-by-step setup help. |
+| `/raffle create [prize] [max_participants] [duration_minutes] [description]` | Create a new raffle. Leave prize blank for random amount (100-5000 php). Creator automatically joins. |
+| `/raffle join [raffle_id]` | Join an active raffle. Leave raffle_id blank to join most recent active raffle in channel. |
+| `/raffle leave [raffle_id]` | Leave a raffle you've joined. Leave raffle_id blank to leave most recent raffle you joined. |
+| `/raffle end [raffle_id]` | End the raffle with 3-second spinning animation and pick a winner (creator only). Leave raffle_id blank to end most recent active raffle in channel. |
+| `/raffle list` | List all active raffles in the server. |
+| `/raffle info [raffle_id]` | Show details about a raffle. Leave raffle_id blank for most recent active raffle in channel. |
+| `/raffle balance [user]` | Check your or another user's virtual currency balance. |
+| `/raffle leaderboard` | Show top 5 richest members and your current rank. |
+| `/raffle autorole [role]` | Set role for automatic raffle participation. Use "off" to disable. |
 
 ---
 

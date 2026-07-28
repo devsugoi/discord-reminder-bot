@@ -97,15 +97,57 @@ _REMINDER_STRONG_PATTERNS = [
     r"\bnote\s+to\s+self\b",
 ]
 
+# ---------------------------------------------------------------------------
+# RAFFLE — strong signals.
+# ---------------------------------------------------------------------------
+_RAFFLE_STRONG_PATTERNS = [
+    # -- Tagalog/Libre --
+    r"\w*raffle\w*",         # raffle, raffling, raffled
+    r"\w*giveaway\w*",       # giveaway, giveaways
+    r"\bsweepstakes\b",      # sweepstakes
+    r"\blottery\b",          # lottery
+    r"\bdraw\b|\bdrawing\b", # draw, drawing
+    r"\bpoto\s*pot\b",       # poto pot (Filipino raffle term)
+    r"\bswerte\b",           # suwerte/luck (in raffle context)
+    r"\bhadiah\b",           # hadiah (prize in Indonesian/Malay, sometimes used)
+    r"\bpremio\b",           # premio (prize in Spanish)
+    r"\bpremyo\b",           # premyo (prize in Tagalog/Spanish mix)
+    r"\bislip\b",            # islIP? actually no, let me think of Filipino raffle terms
+    r"\btombo\b",            # tombola/raffle
+    r"\ bingo\b",            # bingo (sometimes used for raffles)
+    r"\bjackpot\b",          # jackpot
+    r"\bprize\b",            # prize
+    # -- English --
+    r"\bwin\b.*\bwin\b",     # double win (like "win win")
+    r"\bluckydraw\b",        # lucky draw
+]
+
+# ---------------------------------------------------------------------------
+# RAFFLE — weak signals: only count when certain context is also present.
+# ---------------------------------------------------------------------------
+_RAFFLE_WEAK_PATTERNS = [
+    r"\benter\b|\bentry\b",    # enter the raffle
+    r"\bjoin\b|\s*\s*joinin\b", # join
+    r"\bpisok\s*\*",           # pisuan/pisonet context sometimes
+    r"\bticket\b",             # ticket
+    r"\bnumber\b|\s*nos*\b",   # number/nos (ticket numbers)
+    r"\bwinner\b|\s*winners*\b", # winner(s)
+    r"\bpot\b",                # pot (as in prize pot)
+    r"\bjackpot\b",            # jackpot
+    r"\bapprox\b|\s*approximately\s*\b", # approximately
+]
+
 _debt_strong_regex = re.compile("|".join(_DEBT_STRONG_PATTERNS), re.IGNORECASE)
 _debt_weak_regex = re.compile("|".join(_DEBT_WEAK_PATTERNS), re.IGNORECASE)
 _reminder_strong_regex = re.compile("|".join(_REMINDER_STRONG_PATTERNS), re.IGNORECASE)
+_raffle_strong_regex = re.compile("|".join(_RAFFLE_STRONG_PATTERNS), re.IGNORECASE)
+_raffle_weak_regex = re.compile("|".join(_RAFFLE_WEAK_PATTERNS), re.IGNORECASE)
 
 
 def prescan(message_text: str) -> set[str]:
     """Classify a message into zero or more rough categories.
 
-    Returns a set that may contain "debt" and/or "reminder".
+    Returns a set that may contain "debt", "reminder", and/or "raffle".
     An empty set means: not interesting, don't spend an AI call
     (unless a hot conversation window says otherwise - see bot.py).
     """
@@ -121,5 +163,11 @@ def prescan(message_text: str) -> set[str]:
 
     if _reminder_strong_regex.search(message_text):
         categories.add("reminder")
+
+    if _raffle_strong_regex.search(message_text):
+        categories.add("raffle")
+    elif _raffle_weak_regex.search(message_text) and MONEY_PATTERN.search(message_text):
+        # Weak raffle words like "enter"/"join" only count next to an actual amount.
+        categories.add("raffle")
 
     return categories

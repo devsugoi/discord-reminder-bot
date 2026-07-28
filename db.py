@@ -129,6 +129,56 @@ def init() -> None:
                 PRIMARY KEY (user_id, memory_key, context)
             )"""
         )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS raffles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                prize_description TEXT NOT NULL,
+                prize_amount REAL NOT NULL DEFAULT 0.0,
+                currency TEXT NOT NULL DEFAULT '₱',
+                creator_name TEXT NOT NULL,
+                creator_id INTEGER,
+                channel_id INTEGER,
+                guild_id INTEGER,
+                source_message_id INTEGER,
+                created_at TEXT NOT NULL,
+                ends_at TEXT,                    -- When raffle ends
+                ended_at TEXT,                   -- When actually ended
+                winner_id INTEGER,               -- Winner's Discord ID
+                winner_name TEXT,                -- Winner's display name
+                max_participants INTEGER,        -- NULL = unlimited
+                auto_join_role_id INTEGER,       -- Role ID for automatic participation (NULL = disabled)
+                active BOOLEAN NOT NULL DEFAULT 1
+            )"""
+        )
+        # Ensure new columns exist for backward compatibility
+        _ensure_column(conn, "raffles", "ended_at", "TEXT")
+        _ensure_column(conn, "raffles", "winner_id", "INTEGER")
+        _ensure_column(conn, "raffles", "winner_name", "TEXT")
+        # Migrate from entry_cost to prize_amount
+        # Use index 1 (column name) from PRAGMA – works even if row_factory isn't set.
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(raffles)")}
+        if "entry_cost" in existing_cols and "prize_amount" not in existing_cols:
+            conn.execute("ALTER TABLE raffles RENAME COLUMN entry_cost TO prize_amount")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS raffle_participants (
+                raffle_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                user_name TEXT NOT NULL,
+                joined_at TEXT NOT NULL,
+                joined_via TEXT NOT NULL DEFAULT 'command',  -- 'command', 'role', 'natural_language'
+                PRIMARY KEY (raffle_id, user_id),
+                FOREIGN KEY (raffle_id) REFERENCES raffles(id) ON DELETE CASCADE
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS user_balances (
+                user_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                balance REAL NOT NULL DEFAULT 0.0,
+                currency TEXT NOT NULL DEFAULT '₱',
+                PRIMARY KEY (user_id, guild_id)
+            )"""
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -650,3 +700,380 @@ def build_user_context(user_id: int, mentioned_user_ids: list[int] | None = None
 
     # Hard limit to 20 items to keep token usage reasonable
     return "User context:\n" + "\n".join(f"- {m}" for m in memories[:20])
+
+
+# ---------------------------------------------------------------------------
+# Raffles
+# ---------------------------------------------------------------------------
+
+
+def create_raffle(
+    prize_description: str,
+    prize_amount: float,
+    currency: str,
+    creator_name: str,
+    creator_id: int,
+    channel_id: int,
+    guild_id: int,
+    source_message_id: int | None = None,
+    ends_at: str | None = None,
+    max_participants: int | None = None,
+    auto_join_role_id: int | None = None,
+    active: bool = True,
+) -> int:
+    """Insert a new raffle and return its id."""
+    with _connect() as conn:
+        cursor = conn.execute(
+            """INSERT INTO raffles (
+                prize_description, prize_amount, currency, creator_name, creator_id,
+                channel_id, guild_id, source_message_id, created_at, ends_at,
+                max_participants, auto_join_role_id, active
+            )
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                prize_description, prize_amount, currency, creator_name, creator_id,
+                channel_id, guild_id, source_message_id, _now_iso(), ends_at,
+                max_participants, auto_join_role_id, active,
+            ),
+        )
+        return cursor.lastrowid
+
+
+def get_raffle(raffle_id: int) -> sqlite3.Row | None:
+    """Get a raffle by its ID."""
+    with _connect() as conn:
+        return conn.execute("SELECT * FROM raffles WHERE id = ?", (raffle_id,)).fetchone()
+
+
+def _raffle_prize(raffle: sqlite3.Row) -> float:
+    """Safely read prize_amount, falling back to entry_cost for unmigrated databases."""
+    try:
+        return raffle["prize_amount"]
+    except KeyError:
+        return raffle["entry_cost"]
+
+
+def get_active_raffles(channel_id: int | None = None, guild_id: int | None = None) -> list[sqlite3.Row]:
+    """Get active raffles, optionally filtered by channel and/or guild."""
+    with _connect() as conn:
+        if channel_id is not None and guild_id is not None:
+            return conn.execute(
+                "SELECT * FROM raffles WHERE active = 1 AND channel_id = ? AND guild_id = ? ORDER BY created_at",
+                (channel_id, guild_id),
+            ).fetchall()
+        elif channel_id is not None:
+            return conn.execute(
+                "SELECT * FROM raffles WHERE active = 1 AND channel_id = ? ORDER BY created_at",
+                (channel_id,),
+            ).fetchall()
+        elif guild_id is not None:
+            return conn.execute(
+                "SELECT * FROM raffles WHERE active = 1 AND guild_id = ? ORDER BY created_at",
+                (guild_id,),
+            ).fetchall()
+        else:
+            return conn.execute(
+                "SELECT * FROM raffles WHERE active = 1 ORDER BY created_at"
+            ).fetchall()
+
+
+def join_raffle(
+    raffle_id: int,
+    user_id: int,
+    user_name: str,
+    joined_via: str = "command",
+) -> bool:
+    """Add a participant to a raffle. Returns True if joined, False if already participated."""
+    with _connect() as conn:
+        try:
+            conn.execute(
+                """INSERT INTO raffle_participants (raffle_id, user_id, user_name, joined_at, joined_via)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (raffle_id, user_id, user_name, _now_iso(), joined_via),
+            )
+            return True
+        except sqlite3.IntegrityError:
+            # Already participated (UNIQUE constraint violation)
+            return False
+
+
+def leave_raffle(raffle_id: int, user_id: int) -> bool:
+    """Remove a participant from a raffle. Returns True if removed, False if not found."""
+    with _connect() as conn:
+        cursor = conn.execute(
+            "DELETE FROM raffle_participants WHERE raffle_id = ? AND user_id = ?",
+            (raffle_id, user_id),
+        )
+        return cursor.rowcount > 0
+
+
+def get_raffle_participants(raffle_id: int) -> list[sqlite3.Row]:
+    """Get all participants for a raffle."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT * FROM raffle_participants WHERE raffle_id = ? ORDER BY joined_at",
+            (raffle_id,),
+        ).fetchall()
+
+
+def end_raffle(raffle_id: int) -> dict | None:
+    """End a raffle, select a random winner, and return the winner's info and raffle stats.
+    Returns None if raffle has no participants or is already ended."""
+    with _connect() as conn:
+        # Check if raffle exists and is active
+        raffle = conn.execute(
+            "SELECT * FROM raffles WHERE id = ? AND active = 1", (raffle_id,)
+        ).fetchone()
+        if not raffle:
+            return None
+
+        # Get participants
+        participants = conn.execute(
+            "SELECT user_id, user_name FROM raffle_participants WHERE raffle_id = ?",
+            (raffle_id,),
+        ).fetchall()
+
+        if not participants:
+            # No participants, mark as ended but no winner
+            conn.execute(
+                "UPDATE raffles SET active = 0, ended_at = ? WHERE id = ?",
+                (_now_iso(), raffle_id),
+            )
+            return None
+
+        # Select random winner
+        import random
+        winner = random.choice(participants)
+
+        # Prize amount is the fixed prize the creator set
+        # Fallback for databases that haven't been migrated yet
+        try:
+            prize_amount = raffle["prize_amount"]
+        except KeyError:
+            prize_amount = raffle.get("entry_cost", 0.0)
+
+        # Update raffle with winner and end time
+        conn.execute(
+            """UPDATE raffles
+               SET active = 0, ended_at = ?, winner_id = ?, winner_name = ?
+               WHERE id = ?""",
+            (_now_iso(), winner["user_id"], winner["user_name"], raffle_id),
+        )
+
+        # Update raffle with winner and end time
+        conn.execute(
+            """UPDATE raffles
+               SET active = 0, ended_at = ?, winner_id = ?, winner_name = ?
+               WHERE id = ?""",
+            (_now_iso(), winner["user_id"], winner["user_name"], raffle_id),
+        )
+
+        # Capture values needed after closing this connection
+        winner_id = winner["user_id"]
+        winner_name = winner["user_name"]
+        guild_id = raffle["guild_id"]
+        currency = raffle["currency"]
+        participant_count = len(participants)
+
+    # Award the prize OUTSIDE the first connection to avoid database-locked errors
+    update_user_balance(
+        winner_id,
+        guild_id,
+        prize_amount,
+        currency
+    )
+
+    # Return winner info and raffle stats
+    return {
+        "winner_id": winner_id,
+        "winner_name": winner_name,
+        "prize_pool": prize_amount,
+        "participant_count": participant_count
+    }
+
+
+def get_user_balance(user_id: int, guild_id: int) -> tuple[float, str]:
+    """Get a user's balance for a specific guild."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT balance, currency FROM user_balances WHERE user_id = ? AND guild_id = ?",
+            (user_id, guild_id),
+        ).fetchone()
+        if row:
+            return row["balance"], row["currency"]
+        else:
+            # Create default balance entry if it doesn't exist
+            conn.execute(
+                """INSERT OR IGNORE INTO user_balances (user_id, guild_id, balance, currency)
+                   VALUES (?, ?, 0.0, '₱')""",
+                (user_id, guild_id),
+            )
+            return 0.0, "₱"
+
+
+def get_top_balances(guild_id: int, limit: int = 5) -> list[sqlite3.Row]:
+    """Get the top N balances in a guild, ordered highest first."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT user_id, balance, currency FROM user_balances WHERE guild_id = ? ORDER BY balance DESC LIMIT ?",
+            (guild_id, limit),
+        ).fetchall()
+
+
+def get_user_balance_rank(guild_id: int, user_id: int) -> int | None:
+    """Return the 1-based rank of a user in the guild leaderboard, or None if not found."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT balance FROM user_balances WHERE user_id = ? AND guild_id = ?",
+            (user_id, guild_id),
+        ).fetchone()
+        if not row:
+            return None
+        user_balance = row["balance"]
+        # Count how many users have strictly higher balance, then add 1
+        count = conn.execute(
+            "SELECT COUNT(*) FROM user_balances WHERE guild_id = ? AND balance > ?",
+            (guild_id, user_balance),
+        ).fetchone()[0]
+        return count + 1
+
+
+def update_user_balance(
+    user_id: int,
+    guild_id: int,
+    amount: float,
+    currency: str = "₱",
+) -> bool:
+    """Update a user's balance by adding/subtracting amount. Returns False if would result in negative balance."""
+    with _connect() as conn:
+        # First, ensure the user has a balance entry
+        conn.execute(
+            """INSERT OR IGNORE INTO user_balances (user_id, guild_id, balance, currency)
+               VALUES (?, ?, 0.0, ?)""",
+            (user_id, guild_id, currency),
+        )
+
+        # Check current balance
+        current = conn.execute(
+            "SELECT balance FROM user_balances WHERE user_id = ? AND guild_id = ?",
+            (user_id, guild_id),
+        ).fetchone()
+
+        current_balance = current["balance"] if current else 0.0
+        new_balance = current_balance + amount
+
+        # Prevent negative balance
+        if new_balance < 0:
+            return False
+
+        # Then update the balance
+        conn.execute(
+            """UPDATE user_balances
+               SET balance = ?
+               WHERE user_id = ? AND guild_id = ?""",
+            (new_balance, user_id, guild_id),
+        )
+        return True
+
+
+def get_guild_auto_join_role(guild_id: int) -> int | None:
+    """Get the configured default auto-join role ID for a guild."""
+    return get_setting(f"raffle_autorole_role_{guild_id}", "")
+
+
+def set_guild_auto_join_role(guild_id: int, role_id: int | None) -> None:
+    """Set the default auto-join role ID for a guild."""
+    if role_id is None:
+        # Delete the setting to disable
+        conn = _connect()
+        try:
+            conn.execute(
+                "DELETE FROM settings WHERE key = ?",
+                (f"raffle_autorole_role_{guild_id}",),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    else:
+        set_setting(f"raffle_autorole_role_{guild_id}", str(role_id))
+
+
+def get_guild_auto_join_enabled(guild_id: int) -> bool:
+    """Check if role-based auto-join is enabled for a guild."""
+    return get_setting(f"raffle_autorole_enabled_{guild_id}", "false") == "true"
+
+
+def set_guild_auto_join_enabled(guild_id: int, enabled: bool) -> None:
+    """Enable or disable role-based auto-join for a guild."""
+    set_setting(f"raffle_autorole_enabled_{guild_id}", "true" if enabled else "false")
+
+
+# ---------------------------------------------------------------------------
+# Helper functions for processing raffles with role-based auto-join
+# ---------------------------------------------------------------------------
+
+
+def get_raffles_with_auto_join_role(guild_id: int, role_id: int) -> list[sqlite3.Row]:
+    """Get active raffles in a guild that are configured for auto-join via a specific role."""
+    with _connect() as conn:
+        return conn.execute(
+            """SELECT * FROM raffles
+               WHERE guild_id = ? AND active = 1 AND auto_join_role_id = ?""",
+            (guild_id, role_id),
+        ).fetchall()
+
+
+def cancel_raffle(raffle_id: int) -> bool:
+    """Cancel a raffle. Returns True if cancelled."""
+    with _connect() as conn:
+        # Check if raffle exists and is active
+        raffle = conn.execute(
+            "SELECT * FROM raffles WHERE id = ? AND active = 1", (raffle_id,)
+        ).fetchone()
+        if not raffle:
+            return False
+
+        # Mark raffle as cancelled (not active, no winner)
+        conn.execute(
+            "UPDATE raffles SET active = 0, ended_at = ? WHERE id = ?",
+            (_now_iso(), raffle_id),
+        )
+
+        return True
+
+
+def add_role_based_participants(
+    raffle_id: int,
+    user_ids: list[int],
+    user_names: dict[int, str],  # Maps user_id to display name
+) -> int:
+    """Add multiple users as participants to a raffle (for role-based auto-join).
+    Returns the number of new participants added."""
+    added_count = 0
+    with _connect() as conn:
+        for user_id in user_ids:
+            user_name = user_names.get(user_id, f"User-{user_id}")
+            if join_raffle(raffle_id, user_id, user_name, "role"):
+                added_count += 1
+    return added_count
+
+
+def get_user_raffles(user_id: int, guild_id: int, channel_id: int) -> list[sqlite3.Row]:
+    """Get raffles the user has joined in a specific guild and channel."""
+    with _connect() as conn:
+        return conn.execute(
+            """SELECT r.* FROM raffles r
+               JOIN raffle_participants p ON p.raffle_id = r.id
+               WHERE p.user_id = ? AND r.guild_id = ? AND r.channel_id = ? AND r.active = 1
+               ORDER BY r.created_at DESC""",
+            (user_id, guild_id, channel_id),
+        ).fetchall()
+
+
+def get_raffle_participant(raffle_id: int, user_id: int) -> sqlite3.Row | None:
+    """Get a specific participant in a raffle, or None if not participating."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT * FROM raffle_participants WHERE raffle_id = ? AND user_id = ?",
+            (raffle_id, user_id),
+        ).fetchone()

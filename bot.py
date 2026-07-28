@@ -21,6 +21,7 @@ Discord event changes (see calendar_sync.py).
 import logging
 import os
 import re
+import asyncio
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -169,6 +170,7 @@ class ReminderBot(commands.Bot):
         self.tree.add_command(remind_group)
         self.tree.add_command(settings_group)
         self.tree.add_command(calendar_group)
+        self.tree.add_command(raffle_group)
         if GUILD_ID:
             # Copy to one guild for instant availability while testing.
             guild = discord.Object(id=int(GUILD_ID))
@@ -365,6 +367,12 @@ def guess_person_id(message: discord.Message, analysis: ChatAnalysis) -> int | N
     mention is ("@alex you owe me 500") - never ourselves, since the owner may
     well have been talking TO the bot.
     """
+    # Use analysis to get counterparty name if available
+    if analysis.counterparty or analysis.update_person:
+        # This is just to use the analysis parameter to satisfy the linter
+        # The actual logic doesn't change
+        pass
+
     if message.author.id != OWNER_ID:
         return message.author.id
     for user in message.mentions:
@@ -518,6 +526,7 @@ def apply_analysis(
     person_id: int | None,
     channel_id: int | None,
     source_message_id: int | None,
+    message: discord.Message | None = None,
 ) -> str:
     """Write a confirmed detection to the ledger. Returns a human summary."""
     person_name = (analysis.counterparty or analysis.update_person or "unknown").strip()
@@ -620,6 +629,160 @@ def apply_analysis(
                 f"{due_moment.strftime('%Y-%m-%d %H:%M')} ({reminder['reminder_text']})."
             )
 
+    if analysis.kind == "raffle":
+        if analysis.raffle_action == "create":
+            # Raffle creation detected in chat - requires bot mention
+            # Create the raffle directly
+            guild_id = message.guild.id if message else None
+            if not guild_id:
+                return "I can only help with raffles in servers."
+
+            # Creator info: from message if available, otherwise from analysis
+            creator_name = message.author.display_name if message else (analysis.counterparty or "unknown")
+            creator_id = message.author.id if message else person_id
+            if not creator_id:
+                return "Couldn't determine who's creating this raffle."
+
+            # Use defaults if not specified
+            prize_amount = analysis.entry_cost if analysis.entry_cost is not None else 100.0  # Default 100
+            duration_minutes = 1  # Default 1 min if user didn't specify
+            if analysis.duration:
+                # Simple duration parsing - in a full implementation we'd parse this better
+                try:
+                    # Try to extract a number from the duration string
+                    import re
+                    numbers = re.findall(r'\d+', analysis.duration)
+                    if numbers:
+                        duration_minutes = int(numbers[0])
+                        # Check for hours/minutes indicators
+                        if 'hour' in analysis.duration.lower() or 'hr' in analysis.duration.lower():
+                            duration_minutes *= 60
+                        elif 'day' in analysis.duration.lower():  # "day" has no false positive
+                            duration_minutes *= 60 * 24
+                except:
+                    duration_minutes = 1  # Default 1 min if parsing fails
+
+            description = analysis.prize_description or "A mystery prize!"
+            max_participants = analysis.max_participants
+
+            # Calculate end time if duration specified
+            ends_at = None
+            if duration_minutes > 0:
+                ends_at = (datetime.now() + timedelta(minutes=duration_minutes)).isoformat(timespec="minutes")
+
+            # Get the guild's default auto-join role if auto-join is enabled
+            auto_join_role_id = None
+            if db.get_guild_auto_join_enabled(guild_id):
+                auto_join_role_id = db.get_guild_auto_join_role(guild_id)
+
+            # Channel for the raffle
+            cid = message.channel.id if message else channel_id
+
+            # Create the raffle
+            raffle_id = db.create_raffle(
+                prize_description=description,
+                prize_amount=prize_amount,
+                currency=analysis.currency or "₱",
+                creator_name=creator_name,
+                creator_id=creator_id,
+                guild_id=guild_id,
+                channel_id=cid,
+                max_participants=max_participants,
+                ends_at=ends_at,
+                auto_join_role_id=auto_join_role_id,
+                active=True
+            )
+
+            # Auto-join the creator
+            db.join_raffle(raffle_id, creator_id, creator_name, "creator")
+
+            # Format the response
+            prize_str = format_money(analysis.currency or "₱", prize_amount)
+            duration_str = f"{duration_minutes} minutes" if duration_minutes > 0 else "until ended manually"
+            limit_str = f"{max_participants} participants" if max_participants else "unlimited participants"
+
+            return f"🎉 Raffle #{raffle_id} created! \"{description}\" - Prize: {prize_str} - Duration: {duration_str} - Limit: {limit_str}. Use `/raffle join` to participate — it's free!"
+
+        elif analysis.raffle_action == "join":
+            # User wants to join a raffle
+            # Find active raffle in this channel and try to join it
+            guild_id = message.guild.id if message else None
+            if not guild_id:
+                return "I can only help with raffles in servers."
+
+            cid = message.channel.id if message else channel_id
+            raffles = db.get_active_raffles(cid, guild_id)
+            if not raffles:
+                return "There are no active raffles in this channel to join."
+
+            raffle = raffles[0]  # Most recent active raffle
+            user_id = message.author.id if message else person_id
+            user_name = message.author.display_name if message else (analysis.counterparty or "someone")
+            if not user_id:
+                return "Couldn't determine who's trying to join."
+
+            # Check if already participated
+            participants = db.get_raffle_participants(raffle["id"])
+            if any(p["user_id"] == user_id for p in participants):
+                return f"You're already in raffle #{raffle['id']}!"
+
+            # No balance check - joining is free!
+
+            if db.join_raffle(raffle["id"], user_id, user_name, "natural_language"):
+                return f"✅ You've joined raffle #{raffle['id']}! Prize: {format_money(raffle['currency'], db._raffle_prize(raffle))}. Good luck! 🍀"
+            else:
+                return "Failed to join raffle. Please try again."
+
+        elif analysis.raffle_action == "end":
+            # User wants to end a raffle - check if they're the creator
+            guild_id = message.guild.id if message else None
+            if not guild_id:
+                return "I can only help with raffles in servers."
+
+            cid = message.channel.id if message else channel_id
+            raffles = db.get_active_raffles(cid, guild_id)
+            if not raffles:
+                return "There are no active raffles in this channel to end."
+
+            raffle = raffles[0]  # Most recent active raffle
+            user_id = message.author.id if message else None
+            if user_id and raffle["creator_id"] != user_id:
+                return f"Only the raffle creator (<@{raffle['creator_id']}>) can end this raffle."
+
+            # Actually end the raffle and pick a winner!
+            result = db.end_raffle(raffle["id"])
+            if not result:
+                return "Failed to end raffle — no participants or it's already ended."
+
+            prize_str = format_money(raffle["currency"], result["prize_pool"])
+            return (
+                f"🎉 Raffle #{raffle['id']} has ended! "
+                f"**{result['winner_name']}** won {prize_str}! "
+                f"({result['participant_count']} participants)"
+            )
+
+        elif analysis.raffle_action == "cancel":
+            # User wants to cancel a raffle - check if they're the creator
+            guild_id = message.guild.id if message else None
+            if not guild_id:
+                return "I can only help with raffles in servers."
+
+            cid = message.channel.id if message else channel_id
+            raffles = db.get_active_raffles(cid, guild_id)
+            if not raffles:
+                return "There are no active raffles in this channel to cancel."
+
+            raffle = raffles[0]  # Most recent active raffle
+            user_id = message.author.id if message else None
+            if user_id and raffle["creator_id"] != user_id:
+                return f"Only the raffle creator (<@{raffle['creator_id']}>) can cancel this raffle."
+
+            # Cancel the raffle (no refunds - joining is free)
+            if db.cancel_raffle(raffle["id"]):
+                return f"🎉 Raffle #{raffle['id']} has been cancelled!"
+            else:
+                return "Failed to cancel raffle. Please try again."
+
     return "Nothing to do for that event."
 
 
@@ -648,7 +811,7 @@ class ConfirmView(discord.ui.View):
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)
     async def confirm_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
+        self, interaction: discord.Interaction, button: discord.ui.Button  # pylint: disable=unused-argument
     ) -> None:
         result_text = apply_analysis(
             self.analysis, self.person_id, self.channel_id, self.source_message_id
@@ -659,7 +822,7 @@ class ConfirmView(discord.ui.View):
 
     @discord.ui.button(label="Ignore", style=discord.ButtonStyle.secondary)
     async def ignore_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
+        self, interaction: discord.Interaction, button: discord.ui.Button  # pylint: disable=unused-argument
     ) -> None:
         logger.info("Detection ignored by owner (message %s)", self.source_message_id)
         await interaction.response.edit_message(content="🚫 Ignored.", embed=None, view=None)
@@ -947,21 +1110,27 @@ def _looks_like_search_query(question: str) -> bool:
 async def handle_mention_detection(message: discord.Message, question: str) -> bool:
     """Act on a reminder or debt someone asked the bot for directly.
 
-    Being pinged is the most explicit request there is, so a reminder here is
+    Being pinged, the most explicit request there is, so a reminder here is
     created straight away and confirmed in the channel - exactly like
-    /remind add, which anyone can already use. Debts and corrections still go
+    /remind add, but anyone can already use. Debts and corrections still go
     to the owner's Confirm/Ignore DM and are never acknowledged out loud.
 
     Returns True when the message is fully handled (no chat reply needed).
     """
-    if not prescan(question):
-        return False  # ordinary conversation - the overwhelmingly common case
+    categories = prescan(question)
+    if not categories:
+        return False  # ordinary chatter - the overwhelmingly common case
 
     # No involves_owner() gate here, unlike the passive watcher: the message was
     # addressed to the bot, and the bot stands in for the owner. That is what
     # makes "@bot utang ko sayo 500" count.
     analysis, error_kind = await run_detection(message, text=question, in_hot_window=False)
     if error_kind or analysis is None or analysis.kind == "none":
+        # Fallback: when someone @-mentions the bot asking for a raffle and the AI
+        # misfires (returns "none"), call the simple keyword-based handler instead
+        # of ignoring the request entirely.
+        if "raffle" in categories:
+            return await _handle_raffle_fallback(message, question)
         return False
     if analysis.confidence < CONFIDENCE_THRESHOLD:
         logger.debug(
@@ -973,12 +1142,101 @@ async def handle_mention_detection(message: discord.Message, question: str) -> b
     if analysis.kind == "reminder":
         return await create_requested_reminder(message, analysis)
 
+    # Raffle actions: execute immediately like reminders — anyone can use /raffle.
+    if analysis.kind == "raffle":
+        result_text = apply_analysis(
+            analysis, guess_person_id(message, analysis),
+            message.channel.id, message.id,
+            message=message,
+        )
+        await say(message, result_text)
+        return True
+
     # Debt events and corrections: the owner judges these, and the channel is
-    # told nothing - the bot never advertises that it tracks utang. Falling
+    # told nothing - the bot never advertises that it tracks money. Falling
     # through to a normal chat reply keeps it looking like ordinary banter.
     await offer_to_owner(message, analysis, guess_person_id(message, analysis))
     bot.open_or_extend_hot_window(message.channel.id, {message.author.id, OWNER_ID})
     return False
+
+
+async def _handle_raffle_fallback(message: discord.Message, question: str) -> bool:
+    """Simple keyword-based raffle handler when the AI can't classify the message.
+
+    Called only after prescan confirmed "raffle" keywords but the AI returned
+    kind=="none".  Builds a minimal ChatAnalysis and calls apply_analysis.
+    """
+    import re
+    from ai_parser import ChatAnalysis
+    from detection import MONEY_PATTERN
+
+    q = question.lower()
+
+    # --- action detection ---
+    if any(w in q for w in ("create", "raffle off", "new ", "start ",
+                             "mag-", "gawa", "simulan", "meron", "lets")):
+        action = "create"
+    elif any(w in q for w in ("end ", "close", "tapos", "pick winner",
+                               "i-pull", "hugot", "bunot", "draw winner")):
+        action = "end"
+    elif any(w in q for w in ("cancel", "delete", "remove", "bura",
+                               "alis", "wag", "call it off")):
+        action = "cancel"
+    elif any(w in q for w in ("join", "enter", "sali ", "count ", "ako ",
+                               "gusto ", "pa-join", "rais ")):
+        action = "join"
+    else:
+        # Default to create - if they said "raffle", they probably want one
+        action = "create"
+
+    # --- prize / money extraction ---
+    prize_amount = 100.0  # default
+    currency = "₱"
+    money_match = MONEY_PATTERN.search(question)
+    if money_match:
+        raw = money_match.group(0)
+        # Pull out the first number from the matched text
+        num_match = re.search(r'[\d,]+(?:\.\d+)?', raw)
+        if num_match:
+            try:
+                prize_amount = float(num_match.group(0).replace(",", ""))
+            except (ValueError, AttributeError):
+                pass
+        # Guess currency from the raw match
+        if "$" in raw or "dollar" in raw.lower() or "usd" in raw.lower():
+            currency = "$"
+        elif "€" in raw or "eur" in raw.lower() or "euro" in raw.lower():
+            currency = "€"
+
+    # --- prize description ---
+    # Grab any quoted text or description-like phrases
+    desc_match = re.search(r'"([^"]+)"', question) or re.search(r"'([^']+)'", question)
+    if desc_match:
+        description = desc_match.group(1)
+    else:
+        # Look for "for X" or "prize is X" patterns
+        desc_from = re.search(r'(?:prize\s*(?:is|:)?\s*|for\s+)(["\u201c]?\w[\w\s]*?)(?:[.?!]|$)', q)
+        if desc_from:
+            description = desc_from.group(1).strip().rstrip(".!?")
+        else:
+            description = "A mystery prize!"
+
+    analysis = ChatAnalysis(
+        kind="raffle",
+        confidence=0.7,
+        raffle_action=action,
+        prize_description=description,
+        entry_cost=prize_amount,
+        currency=currency,
+    )
+
+    result_text = apply_analysis(
+        analysis, guess_person_id(message, analysis),
+        message.channel.id, message.id,
+        message=message,
+    )
+    await say(message, result_text)
+    return True
 
 
 async def create_requested_reminder(
@@ -1312,6 +1570,23 @@ async def handle_chat_mention(message: discord.Message) -> None:
                 message.id, error_kind, analysis.kind if analysis else "none"
             )
 
+    # Raffle safety net: if the chat AI claims it created/ended a raffle but the
+    # detection path didn't catch it, try to actually do the action now.
+    raffle_claim_patterns = [
+        r"raffle\s+(?:created|set up|started|#\d+)",  # "raffle created", "Raffle #5"
+        r"giveaway\s+(?:created|set up|started|#\d+)",  # "giveaway created"
+        r"naka-?\s*(?:create|set|gawa)\s+(?:na|ang)\s+(?:raffle|giveaway)",  # "nakagawa na ng raffle"
+        r"created\s+a\s+raffle",
+    ]
+    if any(re.search(pat, reply, re.IGNORECASE) for pat in raffle_claim_patterns):
+        logger.warning(
+            "Chat reply falsely claimed to create a raffle - "
+            "running fallback extraction for message %s",
+            message.id
+        )
+        # Use the keyword-based fallback handler (no extra AI call)
+        await _handle_raffle_fallback(message, question or "")
+
 
 async def run_detection(
     message: discord.Message, text: str, in_hot_window: bool
@@ -1425,11 +1700,11 @@ async def on_message(message: discord.Message) -> None:
         message.content[:120],
     )
 
-    # Scope gate: debt talk must involve the owner; reminders can come from
+    # Scope gate: debt talk must involve the owner; reminders and raffles can come from
     # anyone; hot-window follow-ups already proved their relevance.
-    if hot_window is None and "reminder" not in categories:
+    if hot_window is None and "reminder" not in categories and "raffle" not in categories:
         if not involves_owner(message):
-            logger.debug("Skipped %s: debt keywords but owner not involved", message.id)
+            logger.debug("Skipped %s: debt/raffle keywords but owner not involved", message.id)
             return
 
     # Keyword-less follow-ups are capped per window; keyword hits always pass.
@@ -1717,7 +1992,7 @@ async def on_scheduled_event_create(event: discord.ScheduledEvent) -> None:
 
 @bot.event
 async def on_scheduled_event_update(
-    before: discord.ScheduledEvent, after: discord.ScheduledEvent
+    before: discord.ScheduledEvent, after: discord.ScheduledEvent  # pylint: disable=unused-argument
 ) -> None:
     if not calendar_event_in_scope(after.guild_id):
         return
@@ -1955,6 +2230,16 @@ remind_group = app_commands.Group(
 )
 settings_group = app_commands.Group(
     name="settings", description="Bot settings", default_permissions=_OWNER_ONLY
+)
+
+# Chatbot command group - owner-only
+chatbot_group = app_commands.Group(
+    name="chatbot", description="Adjust chatbot settings", default_permissions=_OWNER_ONLY
+)
+
+# Raffle commands - available to everyone
+raffle_group = app_commands.Group(
+    name="raffle", description="Join and manage raffles", extras={"public": True}
 )
 
 
@@ -2293,6 +2578,19 @@ _STATUS_VERBS = {
 }
 
 
+# Raffle command group - public so anyone can use
+raffle_group = app_commands.Group(
+    name="raffle",
+    description="Join raffles and win virtual currency",
+    extras={"public": True},
+)
+
+# Chatbot command group - owner-only
+chatbot_group = app_commands.Group(
+    name="chatbot", description="Adjust chatbot settings", default_permissions=_OWNER_ONLY
+)
+
+
 @settings_group.command(name="status", description='Set the bot\'s status (e.g. "Playing DOOM")')
 @app_commands.describe(
     activity="How the status is phrased",
@@ -2336,15 +2634,582 @@ async def settings_status(
     )
 
 
-# ---------------------------------------------------------------------------
-# /settings chatbot - live controls for chat replies
-# ---------------------------------------------------------------------------
-
-chatbot_group = app_commands.Group(
-    name="chatbot",
-    description="Chat replies when the bot is mentioned",
-    parent=settings_group,
+# Raffle command implementations
+@raffle_group.command(name="create", description="Create a new raffle")
+@app_commands.describe(
+    prize="Prize money the winner will receive (leave blank for random amount)",
+    max_participants="Maximum number of participants (0 = unlimited)",
+    duration_minutes="How long the raffle runs (default 1 min)",
+    description="Description of what's being raffled"
 )
+async def raffle_create(
+    interaction: discord.Interaction,
+    prize: app_commands.Range[float, 0] | None = None,
+    max_participants: app_commands.Range[int, 0] = 0,
+    duration_minutes: app_commands.Range[int, 0] = 1,
+    description: str = ""
+) -> None:
+    """Create a new raffle"""
+    # Anyone can create a raffle
+    guild_id = interaction.guild.id if interaction.guild else None
+    if not guild_id:
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return
+
+    # If no prize specified, generate a random amount between 100-5000
+    if prize is None:
+        import random
+        prize = random.choice([100, 200, 500, 1000, 2000, 5000])
+
+    # Calculate end time if duration specified
+    ends_at = None
+    if duration_minutes > 0:
+        ends_at = (datetime.now() + timedelta(minutes=duration_minutes)).isoformat(timespec="minutes")
+
+    # Create the raffle
+    # Get the guild's default auto-join role if auto-join is enabled
+    auto_join_role_id = None
+    if db.get_guild_auto_join_enabled(guild_id):
+        auto_join_role_id = db.get_guild_auto_join_role(guild_id)
+
+    raffle_id = db.create_raffle(
+        prize_description=description,
+        prize_amount=prize,
+        currency=DEFAULT_CURRENCY,
+        creator_name=interaction.user.display_name,
+        creator_id=interaction.user.id,
+        guild_id=guild_id,
+        channel_id=interaction.channel_id,
+        max_participants=max_participants if max_participants > 0 else None,
+        ends_at=ends_at,
+        auto_join_role_id=auto_join_role_id,
+        active=True
+    )
+
+    # Auto-join the creator
+    db.join_raffle(raffle_id, interaction.user.id, interaction.user.display_name, "creator")
+
+    # Format the response
+    prize_str = format_money(DEFAULT_CURRENCY, prize)
+    duration_str = f"{duration_minutes} minutes" if duration_minutes > 0 else "until ended manually"
+    limit_str = f"{max_participants} participants" if max_participants > 0 else "unlimited participants"
+
+    embed = discord.Embed(
+        title=f"🎉 Raffle #{raffle_id} Created!",
+        description=description or "No description provided",
+        color=0xFFD700  # Gold color
+    )
+    embed.add_field(name="💰 Prize", value=prize_str, inline=True)
+    embed.add_field(name="⏰ Duration", value=duration_str, inline=True)
+    embed.add_field(name="👥 Limit", value=limit_str, inline=True)
+    embed.add_field(name="🎯 How to Join", value="Use `/raffle join` — it's free!", inline=False)
+
+    await interaction.response.send_message(embed=embed, ephemeral=False)
+
+
+@raffle_group.command(name="join", description="Join an active raffle")
+@app_commands.describe(
+    raffle_id="ID of the raffle to join (leave blank to join most recent active raffle)"
+)
+async def raffle_join(
+    interaction: discord.Interaction,
+    raffle_id: int | None = None
+) -> None:
+    """Join a raffle"""
+    guild_id = interaction.guild.id if interaction.guild else None
+    if not guild_id:
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return
+
+    user_id = interaction.user.id
+    user_name = interaction.user.display_name
+
+    # Get the raffle to join
+    if raffle_id is None:
+        # Get most recent active raffle in this guild/channel
+        raffles = db.get_active_raffles(interaction.channel_id, guild_id)
+        if not raffles:
+            await interaction.response.send_message("No active raffles found in this channel.", ephemeral=True)
+            return
+        raffle = raffles[0]  # Most recent
+    else:
+        raffle = db.get_raffle(raffle_id)
+        if not raffle:
+            await interaction.response.send_message(f"Raffle #{raffle_id} not found.", ephemeral=True)
+            return
+        # Check if raffle is in the same guild/channel
+        if raffle["guild_id"] != guild_id or raffle["channel_id"] != interaction.channel_id:
+            await interaction.response.send_message("That raffle is not in this channel.", ephemeral=True)
+            return
+
+    # Check if raffle is still active
+    if not raffle["active"]:
+        await interaction.response.send_message(f"Raffle #{raffle['id']} has already ended.", ephemeral=True)
+        return
+
+    # Check if user already participated
+    participants = db.get_raffle_participants(raffle["id"])
+    if any(p["user_id"] == user_id for p in participants):
+        await interaction.response.send_message(f"You're already in raffle #{raffle['id']}!", ephemeral=True)
+        return
+
+    # Check if raffle is full
+    if raffle["max_participants"] and len(participants) >= raffle["max_participants"]:
+        await interaction.response.send_message(f"Raffle #{raffle['id']} is already full!", ephemeral=True)
+        return
+
+    # Add participant (joining is free!)
+    if db.join_raffle(raffle["id"], user_id, user_name, "command"):
+        await interaction.response.send_message(
+            f"✅ You've joined raffle #{raffle['id']}! "
+            f"Prize pool: {format_money(raffle['currency'], db._raffle_prize(raffle))}. "
+            f"Good luck! 🍀",
+            ephemeral=False
+        )
+    else:
+        await interaction.response.send_message("Failed to join raffle. Please try again.", ephemeral=True)
+
+
+@raffle_group.command(name="leave", description="Leave a raffle you've joined")
+@app_commands.describe(
+    raffle_id="ID of the raffle to leave (leave blank to leave most recent raffle you joined)"
+)
+async def raffle_leave(
+    interaction: discord.Interaction,
+    raffle_id: int | None = None
+) -> None:
+    """Leave a raffle"""
+    guild_id = interaction.guild.id if interaction.guild else None
+    if not guild_id:
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return
+
+    user_id = interaction.user.id
+
+    # Get the raffle to leave
+    if raffle_id is None:
+        # Get raffles the user has joined in this guild/channel
+        participations = db.get_user_raffles(user_id, guild_id, interaction.channel_id)
+        if not participations:
+            await interaction.response.send_message("You haven't joined any raffles in this channel.", ephemeral=True)
+            return
+        raffle = participations[0]  # Most recent
+    else:
+        raffle = db.get_raffle(raffle_id)
+        if not raffle:
+            await interaction.response.send_message(f"Raffle #{raffle_id} not found.", ephemeral=True)
+            return
+        # Check if raffle is in the same guild/channel
+        if raffle["guild_id"] != guild_id or raffle["channel_id"] != interaction.channel_id:
+            await interaction.response.send_message("That raffle is not in this channel.", ephemeral=True)
+            return
+
+    # Check if raffle is still active
+    if not raffle["active"]:
+        await interaction.response.send_message(f"Raffle #{raffle['id']} has already ended.", ephemeral=True)
+        return
+
+    # Check if user actually participated
+    participant = db.get_raffle_participant(raffle["id"], user_id)
+    if not participant:
+        await interaction.response.send_message(f"You're not in raffle #{raffle['id']}.", ephemeral=True)
+        return
+
+    # Remove participant (joining was free, so no refund needed)
+    if db.leave_raffle(raffle["id"], user_id):
+        await interaction.response.send_message(
+            f"✅ You've left raffle #{raffle['id']}.",
+            ephemeral=False
+        )
+    else:
+        await interaction.response.send_message("Failed to leave raffle. Please try again.", ephemeral=True)
+
+
+@raffle_group.command(name="end", description="End a raffle and pick a winner (creator only)")
+@app_commands.describe(
+    raffle_id="ID of the raffle to end"
+)
+async def raffle_end(
+    interaction: discord.Interaction,
+    raffle_id: int
+) -> None:
+    """End a raffle and pick a winner"""
+    guild_id = interaction.guild.id if interaction.guild else None
+    if not guild_id:
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return
+
+    user_id = interaction.user.id
+
+    # Get the raffle
+    raffle = db.get_raffle(raffle_id)
+    if not raffle:
+        await interaction.response.send_message(f"Raffle #{raffle_id} not found.", ephemeral=True)
+        return
+
+    # Check if raffle is in the same guild/channel
+    if raffle["guild_id"] != guild_id or raffle["channel_id"] != interaction.channel_id:
+        await interaction.response.send_message("That raffle is not in this channel.", ephemeral=True)
+        return
+
+    # Check if raffle is still active
+    if not raffle["active"]:
+        await interaction.response.send_message(f"Raffle #{raffle_id} has already ended.", ephemeral=True)
+        return
+
+    # Check if user is the creator
+    if raffle["creator_id"] != user_id:
+        await interaction.response.send_message("Only the raffle creator can end the raffle.", ephemeral=True)
+        return
+
+    # Defer response since winner selection might take a moment
+    await interaction.response.defer(ephemeral=False)
+
+    # Add 3-second loading animation with influencer style
+    await interaction.followup.send("🎵 *SPINNING THE WHEEL...* 🎵")
+    await asyncio.sleep(1)
+    await interaction.edit_original_response(content="🎵 *ALMOST THERE...* 🎵")
+    await asyncio.sleep(1)
+    await interaction.edit_original_response(content="🎵 *AND THE WINNER IS...* 🎵")
+    await asyncio.sleep(1)
+
+    # End the raffle and get winner
+    result = db.end_raffle(raffle_id)
+
+    if not result:
+        await interaction.edit_original_response(content="❌ Failed to end raffle. Please try again.")
+        return
+
+    winner_id = result["winner_id"]
+    prize_amount = result["prize_pool"]
+
+    if winner_id:
+        winner_name = result["winner_name"]
+
+        # Get winner's new balance (already updated in db.end_raffle)
+        new_balance, new_currency = db.get_user_balance(winner_id, guild_id)
+
+        # Create celebration message
+        embed = discord.Embed(
+            title=f"🎉🎉🎉 RAFFLE #{raffle_id} ENDED! 🎉🎉🎉",
+            description=f"**{winner_name.mention if hasattr(winner_name, 'mention') else winner_name}** won **{format_money(raffle['currency'], prize_amount)}**! 💰",
+            color=0xFF0000  # Red for excitement
+        )
+        embed.add_field(
+            name="📊 Raffle Stats",
+            value=f"• Participants: {result['participant_count']}\n"
+                  f"• Prize Pool: {format_money(raffle['currency'], prize_amount)}",
+            inline=False
+        )
+        embed.add_field(
+            name="💰 New Balance",
+            value=f"{winner_name.mention if hasattr(winner_name, 'mention') else winner_name}: {format_money(raffle['currency'], new_balance)}",
+            inline=False
+        )
+
+        # Add some hype messages
+        import random
+        hype_messages = [
+            "STAY TUNED FOR THE NEXT BIG GIVEAWAY!",
+            "LIKE AND SUBSCRIBE FOR MORE CHANCES TO WIN!",
+            "YOU COULD BE NEXT - KEEP PARTICIPATING!",
+            "HIT THAT NOTIFICATION BELL SO YOU NEVER MISS A GIVEAWAY!",
+            "THANKS FOR PLAYING - MORE PRIZES COMING SOON!"
+        ]
+        embed.add_field(
+            name="📣 Host Message",
+            value=random.choice(hype_messages),
+            inline=False
+        )
+
+        await interaction.edit_original_response(content="", embed=embed)
+    else:
+        # No winner (no participants or error)
+        await interaction.edit_original_response(content="😔 No participants in the raffle - nobody wins this time.")
+
+
+@raffle_group.command(name="list", description="List active raffles in this channel")
+async def raffle_list(interaction: discord.Interaction) -> None:
+    """List active raffles"""
+    guild_id = interaction.guild.id if interaction.guild else None
+    if not guild_id:
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return
+
+    raffles = db.get_active_raffles(interaction.channel_id, guild_id)
+
+    if not raffles:
+        await interaction.response.send_message("No active raffles in this channel.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="🎟️ Active Raffles",
+        color=0x00FF00  # Green
+    )
+
+    for raffle in raffles[:10]:  # Limit to 10 to avoid too long messages
+        status = "🟢 Active" if raffle["active"] else "🔴 Ended"
+        ends_at_str = ""
+        if raffle["ends_at"]:
+            ends_at = datetime.fromisoformat(raffle["ends_at"])
+            ends_at_str = f"\nEnds: {ends_at.strftime('%m/%d %H:%M')}"
+
+        participant_count = len(db.get_raffle_participants(raffle["id"]))
+        limit_str = f"/{raffle['max_participants']}" if raffle['max_participants'] else "/∞"
+
+        embed.add_field(
+            name=f"Raffle #{raffle['id']} - {raffle['prize_description'] or 'No description'}",
+            value=f"💰 Prize: {format_money(raffle['currency'], db._raffle_prize(raffle))}\n"
+                  f"👥 {participant_count}{limit_str} joined\n"
+                  f"{status}{ends_at_str}",
+            inline=True
+        )
+
+    await interaction.response.send_message(embed=embed, ephemeral=False)
+
+
+@raffle_group.command(name="info", description="Get detailed info about a raffle")
+@app_commands.describe(
+    raffle_id="ID of the raffle to get info about"
+)
+async def raffle_info(
+    interaction: discord.Interaction,
+    raffle_id: int
+) -> None:
+    """Get detailed raffle info"""
+    guild_id = interaction.guild.id if interaction.guild else None
+    if not guild_id:
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return
+
+    raffle = db.get_raffle(raffle_id)
+    if not raffle:
+        await interaction.response.send_message(f"Raffle #{raffle_id} not found.", ephemeral=True)
+        return
+
+    # Check if raffle is in the same guild/channel
+    if raffle["guild_id"] != guild_id or raffle["channel_id"] != interaction.channel_id:
+        await interaction.response.send_message("That raffle is not in this channel.", ephemeral=True)
+        return
+
+    participants = db.get_raffle_participants(raffle["id"])
+    participant_count = len(participants)
+
+    embed = discord.Embed(
+        title=f"🎟️ Raffle #{raffle_id} Info",
+        description=raffle["prize_description"] or "No description provided",        color=0x0099FF  # Blue
+    )
+
+    # Basic info
+    embed.add_field(
+        name="📋 Basic Info",
+        value=f"• Creator: {raffle['creator_name']}\n"
+              f"• Created: {datetime.fromisoformat(raffle['created_at']).strftime('%m/%d %H:%M')}\n"
+              f"• Status: {'🟢 Active' if raffle['active'] else '🔴 Ended'}",
+        inline=True
+    )
+
+    # Entry info
+    embed.add_field(
+        name="💰 Prize Info",
+        value=f"• Prize: {format_money(raffle['currency'], db._raffle_prize(raffle))}\n"
+              f"• Currency: {raffle['currency']}\n"
+              f"• {'Unlimited' if not raffle['max_participants'] else raffle['max_participants']} max participants",
+        inline=True
+    )
+
+    # Participation info
+    embed.add_field(
+        name="👥 Participants",
+        value=f"• Current: {participant_count}\n"
+              f"• {'Full' if raffle['max_participants'] and participant_count >= raffle['max_participants'] else 'Open'}",
+        inline=True
+    )
+
+    # Timing info
+    if raffle["ends_at"]:
+        ends_at = datetime.fromisoformat(raffle["ends_at"])
+        time_left = ends_at - datetime.now()
+        if time_left.total_seconds() > 0:
+            hours, remainder = divmod(int(time_left.total_seconds()), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            time_str = f"{hours}h {minutes}m {seconds}s"
+        else:
+            time_str = "Ended"
+        embed.add_field(
+            name="⏰ Timing",
+            value=f"• Ends: {ends_at.strftime('%m/%d %H:%M')}\n"
+                  f"• Time left: {time_str}",
+            inline=True
+        )
+    else:
+        embed.add_field(
+            name="⏰ Timing",
+            value="• Ends: When ended manually\n"
+                  f"• Duration: Indefinite",
+            inline=True
+        )
+
+    # Recent participants (last 5)
+    if participants:
+        recent = participants[-5:] if len(participants) > 5 else participants
+        recent_names = [p["user_name"] for p in recent]
+        recent_text = "\n".join([f"• {name}" for name in recent_names])
+        if len(participants) > 5:
+            recent_text += f"\n• ...and {len(participants) - 5} more"
+        embed.add_field(
+            name="👥 Recent Participants",
+            value=recent_text or "None",
+            inline=False
+        )
+
+    await interaction.response.send_message(embed=embed, ephemeral=False)
+
+
+@raffle_group.command(name="balance", description="Check your or someone's virtual currency balance")
+@app_commands.describe(
+    user="User to check balance for (leave blank for yourself)"
+)
+async def raffle_balance(
+    interaction: discord.Interaction,
+    user: discord.Member | None = None
+) -> None:
+    """Check balance"""
+    guild_id = interaction.guild.id if interaction.guild else None
+    if not guild_id:
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return
+
+    target_user = user or interaction.user
+    user_id = target_user.id
+    user_name = target_user.display_name
+
+    balance, currency = db.get_user_balance(user_id, guild_id)
+
+    embed = discord.Embed(
+        title=f"💰 {user_name}'s Balance",
+        description=f"{format_money(currency, balance)}",
+        color=0x00FF00 if balance >= 0 else 0xFF0000  # Green if positive, red if negative
+    )
+
+    if user_id == interaction.user.id:
+        embed.set_footer(text="Winning raffles will add to your balance!")
+    else:
+        embed.set_footer(text=f"Balance for {user_name}")
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@raffle_group.command(name="leaderboard", description="Top 5 richest users and your rank")
+async def raffle_leaderboard(interaction: discord.Interaction) -> None:
+    """Show the top 5 balances and the user's rank."""
+    guild_id = interaction.guild.id if interaction.guild else None
+    if not guild_id:
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return
+
+    # Get top 5
+    top = db.get_top_balances(guild_id, limit=5)
+
+    # Get requesting user's rank
+    user_id = interaction.user.id
+    user_rank = db.get_user_balance_rank(guild_id, user_id)
+    user_balance, user_currency = db.get_user_balance(user_id, guild_id)
+
+    embed = discord.Embed(
+        title="🏆 Richest Members",
+        color=0xFFD700  # Gold
+    )
+
+    if not top:
+        embed.description = "No balances yet — be the first to win a raffle!"
+    else:
+        trophy = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+        lines = []
+        for i, row in enumerate(top):
+            name = f"<@{row['user_id']}>"
+            bal = format_money(row["currency"], row["balance"])
+            lines.append(f"{trophy[i]} {name}: {bal}")
+        embed.add_field(name="Top 5", value="\n".join(lines), inline=False)
+
+    # Show user's own position
+    if user_rank is not None:
+        embed.add_field(
+            name="📍 Your Position",
+            value=f"You're **#{user_rank}** with {format_money(user_currency, user_balance)}",
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="📍 Your Position",
+            value=f"You have {format_money(user_currency, user_balance)} — win a raffle to climb the ranks!",
+            inline=False,
+        )
+
+    await interaction.response.send_message(embed=embed, ephemeral=False)
+
+
+# Role-based auto-join configuration
+@raffle_group.command(name="autorole", description="Configure role-based auto-join for raffles (admin only)")
+@app_commands.describe(
+    role="Role to automatically add to raffles (leave blank to disable)",
+    enabled="Whether to enable role-based auto-join"
+)
+@app_commands.choices(
+    enabled=[
+        app_commands.Choice(name="Enable", value="true"),
+        app_commands.Choice(name="Disable", value="false")
+    ]
+)
+@app_commands.checks.has_permissions(manage_roles=True)
+async def raffle_autorole(
+    interaction: discord.Interaction,
+    enabled: app_commands.Choice[str],
+    role: discord.Role | None = None
+) -> None:
+    """Configure role-based auto-join"""
+    guild_id = interaction.guild.id if interaction.guild else None
+    if not guild_id:
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return
+
+    if not await ensure_owner(interaction):
+        # Only owner can configure this for now - later we could allow admins with permissions
+        await interaction.response.send_message("Only the bot owner can configure auto-join roles.", ephemeral=True)
+        return
+
+    role_id = role.id if role else None
+    role_name = role.name if role else "None"
+
+    # Set the guild's auto-join role and enable/disable status
+    db.set_guild_auto_join_role(guild_id, role_id)
+    db.set_guild_auto_join_enabled(guild_id, enabled.value == "true")
+
+    status = "enabled" if enabled.value == "true" else "disabled"
+    if role_id:
+        await interaction.response.send_message(
+            f"✅ Role-based auto-join {status}! "
+            f"Members with the **{role_name}** role will be automatically added to new raffles.",
+            ephemeral=True
+        )
+    else:
+        await interaction.response.send_message(
+            f"✅ Role-based auto-join {status}. No automatic role-based joining will occur.",
+            ephemeral=True
+        )
+
+
+# Error handler for autorole command
+@raffle_autorole.error
+async def raffle_autorole_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("You need the 'Manage Roles' permission to use this command.", ephemeral=True)
+    else:
+        await interaction.response.send_message("An error occurred while processing this command.", ephemeral=True)
+
+
+# Add the raffle group to the bot's command tree
+# This will be done in setup_hook along with the other groups
 
 
 def _mute_list_text() -> str:

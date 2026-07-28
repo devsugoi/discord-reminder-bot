@@ -128,7 +128,7 @@ def _usable_keys(keys: list[str]) -> list[str]:
 class ChatAnalysis(BaseModel):
     """Everything the AI concluded about one Discord message."""
 
-    kind: Literal["debt_event", "reminder", "update", "none"] = Field(
+    kind: Literal["debt_event", "reminder", "update", "raffle", "none"] = Field(
         description="What the message is: a debt event, a reminder request, "
         "a correction to something said earlier, or none of those."
     )
@@ -204,6 +204,32 @@ class ChatAnalysis(BaseModel):
         "reminders when a time is given) or a plain number for amounts.",
     )
 
+    # --- filled when kind == "raffle" ---
+    raffle_action: Optional[Literal["create", "join", "end", "cancel"]] = Field(
+        default=None,
+        description="What action to take with the raffle: create a new raffle, join an existing one, end/close a raffle, or cancel a raffle."
+    )
+    prize_description: Optional[str] = Field(
+        default=None,
+        description="Description of what's being raffled (e.g., 'game code', 'NFT', 'discord nitro')"
+    )
+    entry_cost: Optional[float] = Field(
+        default=None,
+        description="Prize money the winner receives (0 = just for fun, no money involved)"
+    )
+    currency: Optional[str] = Field(
+        default=None,
+        description="Currency for entry cost (e.g., '₱', '$', 'PHP')"
+    )
+    max_participants: Optional[int] = Field(
+        default=None,
+        description="Maximum number of participants (null for unlimited)"
+    )
+    duration: Optional[str] = Field(
+        default=None,
+        description="How long the raffle runs (e.g., '2 hours', 'until tomorrow', '1 day')"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Instructions (built once; the dynamic parts - dates, names - go in the
@@ -236,6 +262,15 @@ KINDS
     "linisin natin every monday" = weekly, first fire on the next Monday.
     A one-off like "sa lunes" (this coming Monday only) leaves reminder_repeat null -
     only set it when the wording really means it happens again and again.
+- "raffle": someone wants to create, join, end, or cancel a raffle/giveaway:
+  * CREATE: "let's raffle off this game", "giveaway for nitro", "raffle starts now", "sweepstakes for 500 pesos"
+  * JOIN: "i want in", "count me in for the raffle", "enter me", "count ko", "sige ako"
+  * END: "time's up, let's pick a winner", "raffle is over", "wag na", "stop na", "pick winner now"
+  * CANCEL: "never mind, cancel the raffle", "let's call it off"
+
+  For creation: extract prize description, prize amount (entry_cost field), currency, duration, participant limit
+  For joining: no additional fields usually needed
+  For ending: records the winner selection (handled by bot logic)
 - "update": a correction to something recorded earlier in the conversation:
   "next month nalang pala" (move the pay date), "500 pala hindi 300" (fix the amount),
   "sa sabado nalang yung paalala" (move the reminder). Use the recent-conversation
