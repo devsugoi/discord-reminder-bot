@@ -1431,6 +1431,24 @@ async def handle_chat_mention(message: discord.Message) -> None:
         await say(message, "😴 my brain's fried for today - catch me again tomorrow!")
         return
 
+    # Check for image attachments - download them so the AI can "see" them.
+    # Capped at 3 images to keep token usage reasonable.
+    image_datas: list[tuple[bytes, str]] = []
+    for attachment in message.attachments:
+        if attachment.content_type and attachment.content_type.startswith("image/"):
+            try:
+                img_bytes = await attachment.read()
+                image_datas.append((img_bytes, attachment.content_type))
+                logger.debug(
+                    "Downloaded image %s (%d bytes, %s)",
+                    attachment.filename, len(img_bytes), attachment.content_type,
+                )
+            except (discord.HTTPException, discord.NotFound) as exc:
+                logger.warning("Could not download attachment %s: %s", attachment.filename, exc)
+    if len(image_datas) > 3:
+        logger.debug("Capping %d images to 3", len(image_datas))
+        image_datas = image_datas[:3]
+
     context_lines = await fetch_context_lines(message)
     search_results = None
     is_search_query = _looks_like_search_query(question)
@@ -1475,6 +1493,7 @@ async def handle_chat_mention(message: discord.Message) -> None:
             search_results=search_results,
             user_id=message.author.id,
             mentioned_user_ids=mentioned_user_ids,
+            image_datas=image_datas or None,
         )
     if error_kind == "quota":
         await bot.notify_owner_once_today(

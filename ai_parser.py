@@ -356,7 +356,7 @@ def _usable_models(models: list[str]) -> list[str]:
 async def _try_models(
     client: genai.Client,
     models: list[str],
-    contents: str,
+    contents: str | list[genai_types.Part],
     config: genai_types.GenerateContentConfig,
     label: str,
 ):
@@ -414,7 +414,7 @@ async def _try_models(
 async def _generate_with_retry(
     keys: list[str],
     models: list[str],
-    contents: str,
+    contents: str | list[genai_types.Part],
     config: genai_types.GenerateContentConfig,
     label: str,
 ):
@@ -593,6 +593,25 @@ HONESTY
 - When someone asks you for a reminder but gives no day or time, ask them when -
   you cannot set one without it."""
 
+# Variant used when the user also sends an image (photo, screenshot, meme, etc.).
+# The persona and rules stay the same, but image-description guidance is added
+# so the bot knows it can see the image and how to talk about it.
+IMAGE_VISION_SYSTEM_PROMPT = CHATBOT_SYSTEM_PROMPT + """
+
+IMAGE AWARENESS (active only when the user sent you a picture)
+- You CAN see the image(s) they sent. Describe what you notice: the main
+  subject, setting, objects, people, colors, anything interesting.
+- If there's text in the image (a screenshot, a sign, a meme caption), read it
+  out and mention it.
+- If they asked a question about the image ("what is this?", "do you know this?",
+  "anong lahi ng dog na 'to?"), answer it. If unsure, say so plainly.
+- If they sent an image with no question, give a brief one- or two-sentence
+  description matching your personality and language mix.
+- If it's a meme or a joke image, react with humor.
+- If the image is blurry, dark, or hard to make out, say so.
+- NEVER invent details that aren't visible just to sound smart. If you can't
+  tell what something is, own it."""
+
 
 def build_chat_payload(
     message_text: str,
@@ -601,6 +620,7 @@ def build_chat_payload(
     context_lines: list[str],
     search_results: str | None = None,
     user_context: str | None = None,
+    image_count: int = 0,
 ) -> str:
     """Assemble the input for one conversational reply."""
     now = datetime.now()
@@ -620,6 +640,12 @@ def build_chat_payload(
         )
         parts.append("Search results:")
         parts.append(search_results)
+    if image_count > 0:
+        parts.append(
+            f"{author_name} sent you {image_count} "
+            f"{'image' if image_count == 1 else 'images'} along with this message. "
+            "Look at {'it' if image_count == 1 else 'them'} carefully."
+        )
     parts.append(f"{author_name} is talking to you and said:")
     parts.append(f'  "{message_text}"')
     parts.append("Reply to them.")
@@ -634,6 +660,7 @@ async def chat_reply(
     search_results: str | None = None,
     user_id: int | None = None,
     mentioned_user_ids: list[int] | None = None,
+    image_datas: list[tuple[bytes, str]] | None = None,
 ) -> tuple[Optional[str], Optional[str]]:
     """Answer one @mention conversationally.
 
@@ -672,6 +699,7 @@ async def chat_reply(
             if user_context:
                 logger.debug("Loaded user memory context (mentioned users)")
 
+    image_count = len(image_datas) if image_datas else 0
     payload = build_chat_payload(
         message_text=message_text,
         author_name=author_name,
@@ -679,13 +707,29 @@ async def chat_reply(
         context_lines=context_lines,
         search_results=search_results,
         user_context=user_context,
+        image_count=image_count,
     )
+
+    # When images are attached, build multimodal contents (text Part + image Parts)
+    # and switch to the vision-aware system prompt.
+    if image_datas:
+        contents_parts = [genai_types.Part.from_text(text=payload)]
+        for img_bytes, mime_type in image_datas:
+            contents_parts.append(
+                genai_types.Part.from_bytes(data=img_bytes, mime_type=mime_type)
+            )
+        system_prompt = IMAGE_VISION_SYSTEM_PROMPT
+        contents: str | list[genai_types.Part] = contents_parts
+    else:
+        contents = payload
+        system_prompt = CHATBOT_SYSTEM_PROMPT
+
     response, error_kind = await _generate_with_retry(
         keys=chat_keys(),
         models=_model_chain(CHATBOT_MODEL, CHATBOT_FALLBACK_MODELS),
-        contents=payload,
+        contents=contents,
         config=genai_types.GenerateContentConfig(
-            system_instruction=CHATBOT_SYSTEM_PROMPT,
+            system_instruction=system_prompt,
             temperature=0.8,        # playful, unlike extraction's 0.0
             max_output_tokens=400,  # it's a chat reply - keep it short and cheap
         ),
