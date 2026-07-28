@@ -892,6 +892,16 @@ def end_raffle(raffle_id: int) -> dict | None:
     }
 
 
+def get_expired_raffles() -> list[dict]:
+    """Return active raffles whose ends_at has passed (not NULL)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM raffles WHERE active = 1 AND ends_at IS NOT NULL AND ends_at <= ?",
+            (_now_iso(),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def get_user_balance(user_id: int, guild_id: int) -> tuple[float, str]:
     """Get a user's balance for a specific guild."""
     with _connect() as conn:

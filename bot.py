@@ -644,6 +644,12 @@ def apply_analysis(
                 return "Couldn't determine who's creating this raffle."
 
             # Use defaults if not specified
+            # Reject non-money raffles — only cash prizes are supported
+            if analysis.entry_cost is None and analysis.prize_description:
+                return (
+                    "ℹ️ I can only raffle **money** prizes! "
+                    "Include an amount, e.g.: *'raffle 500 pesos, prize is a game code'*."
+                )
             prize_amount = analysis.entry_cost if analysis.entry_cost is not None else 100.0  # Default 100
             duration_minutes = 1  # Default 1 min if user didn't specify
             if analysis.duration:
@@ -700,8 +706,9 @@ def apply_analysis(
             prize_str = format_money(analysis.currency or "₱", prize_amount)
             duration_str = f"{duration_minutes} minutes" if duration_minutes > 0 else "until ended manually"
             limit_str = f"{max_participants} participants" if max_participants else "unlimited participants"
+            auto_role_line = f" <@&{auto_join_role_id}> are auto-entered!" if auto_join_role_id else ""
 
-            return f"🎉 Raffle #{raffle_id} created! \"{description}\" - Prize: {prize_str} - Duration: {duration_str} - Limit: {limit_str}. Use `/raffle join` to participate — it's free!"
+            return f"🎉 Raffle #{raffle_id} created! \"{description}\" - Prize: {prize_str} - Duration: {duration_str} - Limit: {limit_str}.{auto_role_line} Use `/raffle join` to participate — it's free!"
 
         elif analysis.raffle_action == "join":
             # User wants to join a raffle
@@ -1220,6 +1227,15 @@ async def _handle_raffle_fallback(message: discord.Message, question: str) -> bo
             description = desc_from.group(1).strip().rstrip(".!?")
         else:
             description = "A mystery prize!"
+
+    # Reject non-money raffles — only cash prizes are supported
+    if not money_match and description != "A mystery prize!":
+        await say(
+            message,
+            "ℹ️ I can only raffle **money** prizes! "
+            "Include an amount, e.g.: *'raffle 500 pesos, prize is a game code'*."
+        )
+        return True
 
     analysis = ChatAnalysis(
         kind="raffle",
@@ -1897,6 +1913,26 @@ async def delivery_loop() -> None:
                 logger.info("Nagged about debt #%s (%s)", debt["id"], debt["person_name"])
         except Exception:
             logger.exception("Failed to send nag for debt #%s", debt["id"])
+
+    # Auto-end timed-out raffles
+    for raffle in db.get_expired_raffles():
+        try:
+            result = db.end_raffle(raffle["id"])
+            if result:
+                channel = bot.get_channel(raffle["channel_id"])
+                if channel:
+                    prize_str = format_money(raffle["currency"], result["prize_pool"])
+                    await channel.send(
+                        f"⏰ Time's up! Raffle #{raffle['id']} has ended! "
+                        f"**{result['winner_name']}** won {prize_str}! "
+                        f"({result['participant_count']} participants)"
+                    )
+                    logger.info(
+                        "Auto-ended expired raffle #%s, winner: %s",
+                        raffle["id"], result["winner_name"],
+                    )
+        except Exception:
+            logger.exception("Failed to auto-end expired raffle #%s", raffle["id"])
 
 
 @delivery_loop.before_loop
@@ -2703,6 +2739,8 @@ async def raffle_create(
     embed.add_field(name="⏰ Duration", value=duration_str, inline=True)
     embed.add_field(name="👥 Limit", value=limit_str, inline=True)
     embed.add_field(name="🎯 How to Join", value="Use `/raffle join` — it's free!", inline=False)
+    if auto_join_role_id:
+        embed.add_field(name="🎖️ Auto-Join", value=f"Users with <@&{auto_join_role_id}> are automatically entered!", inline=False)
 
     await interaction.response.send_message(embed=embed, ephemeral=False)
 
