@@ -235,7 +235,7 @@ All settings live in `.env` (copy `.env.example` and fill it in):
 | `GEMINI_API_KEY` | — | From Google AI Studio (free). **Required.** |
 | `GEMINI_API_KEY_2`, `_3`, … | empty | Backup keys, up to `_20`. When one runs out of quota the bot switches to the next automatically and parks the spent one for an hour. Keys from *different* Google accounts get separate quotas. |
 | `GUILD_ID` | empty | Your server ID → slash commands appear instantly. Empty = global sync (up to 1 h). |
-| `GEMINI_MODEL` | `gemini-3.1-flash-lite` | AI model for detection. Fast, cheap, and reliably available. `gemini-3.5-flash` is stronger but frequently returns 503 (overloaded); the `gemini-2.5-*` models are retired (404). |
+| `GEMINI_MODEL` | `gemini-3.1-flash-lite` | AI model for detection. Fast, cheap, and reliably available. `gemini-3.5-flash` is stronger but frequently returns 503 (overloaded); the `gemini-2.5-*` models are retired (404). Currently recommended: `gemini-3.1-flash-lite` (most reliable) or `gemini-1.5-flash` (newer alternative). |
 | `GEMINI_FALLBACK_MODEL`, `GEMINI_FALLBACK_MODEL_2`, ... | `gemini-3.1-flash-lite`, empty | Backup models used automatically when the one above is overloaded or retired. Empty disables the fallback. Define multiple fallbacks by numbering them (_2, _3, etc.). |
 | `CONFIDENCE_THRESHOLD` | `0.6` | Detections below this confidence are silently dropped. |
 | `MAX_AI_CALLS_PER_DAY` | `200` | Internal safety cap for detection; you get a DM if it's reached. |

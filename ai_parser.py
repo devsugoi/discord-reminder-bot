@@ -113,24 +113,6 @@ def _mark_key_exhausted(api_key: str) -> None:
     )
 
 
-def _api_models(prefix: str) -> list[str]:
-    """Every model configured under `prefix`, in preference order.
-
-    Reads PREFIX, then PREFIX_2, PREFIX_3, ... so backups can be added just by
-    appending lines to .env. Gaps are skipped rather than treated as the end,
-    so deleting _2 doesn't silently hide _3.
-    """
-    models: list[str] = []
-    first = os.getenv(prefix, "").strip()
-    if first:
-        models.append(first)
-    for index in range(2, _MAX_BACKUP + 1):
-        value = os.getenv(f"{prefix}_{index}", "").strip()
-        if value and value not in models:
-            models.append(value)
-    return models
-
-
 def _usable_keys(keys: list[str]) -> list[str]:
     """Drop keys we just saw run out; keep them all if that leaves nothing."""
     now = datetime.now()
