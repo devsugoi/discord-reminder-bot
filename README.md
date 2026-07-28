@@ -236,14 +236,14 @@ All settings live in `.env` (copy `.env.example` and fill it in):
 | `GEMINI_API_KEY_2`, `_3`, … | empty | Backup keys, up to `_20`. When one runs out of quota the bot switches to the next automatically and parks the spent one for an hour. Keys from *different* Google accounts get separate quotas. |
 | `GUILD_ID` | empty | Your server ID → slash commands appear instantly. Empty = global sync (up to 1 h). |
 | `GEMINI_MODEL` | `gemini-3.1-flash-lite` | AI model for detection. Fast, cheap, and reliably available. `gemini-3.5-flash` is stronger but frequently returns 503 (overloaded); the `gemini-2.5-*` models are retired (404). |
-| `GEMINI_FALLBACK_MODEL` | `gemini-3.1-flash-lite` | Backup model used automatically when the one above is overloaded or retired. Empty disables the fallback. |
+| `GEMINI_FALLBACK_MODEL`, `GEMINI_FALLBACK_MODEL_2`, ... | `gemini-3.1-flash-lite`, empty | Backup models used automatically when the one above is overloaded or retired. Empty disables the fallback. Define multiple fallbacks by numbering them (_2, _3, etc.). |
 | `CONFIDENCE_THRESHOLD` | `0.6` | Detections below this confidence are silently dropped. |
 | `MAX_AI_CALLS_PER_DAY` | `200` | Internal safety cap for detection; you get a DM if it's reached. |
 | `CHATBOT_ENABLED` | `true` | Reply when @mentioned. Starting value only — `/settings chatbot toggle` overrides it. |
 | `CHATBOT_API_KEY` | empty | Separate Gemini key for chat, so chatting doesn't spend the detection key's quota. Empty = reuse `GEMINI_API_KEY` and its backups. |
 | `CHATBOT_API_KEY_2`, `_3`, … | empty | Backup chat keys, same rule as above. |
 | `CHATBOT_MODEL` | empty | Model for chat replies — a cheaper/faster one fits well here. Empty = reuse `GEMINI_MODEL`. |
-| `CHATBOT_FALLBACK_MODEL` | empty | Backup model for chat replies. Empty = reuse `GEMINI_FALLBACK_MODEL`. |
+| `CHATBOT_FALLBACK_MODEL`, `CHATBOT_FALLBACK_MODEL_2`, ... | empty | Backup model for chat replies. Empty = reuse `GEMINI_FALLBACK_MODEL` and its fallbacks. Define multiple fallbacks by numbering them (_2, _3, etc.). |
 | `WEB_SEARCH_PROVIDER` | empty | Optional live web search provider for conversational @mention lookup questions. Supported: `serpapi`, `google_cse`. |
 | `WEB_SEARCH_API_KEY` | empty | API key for the configured web search provider. |
 | `WEB_SEARCH_ENGINE_ID` | empty | Google Custom Search Engine ID (`cx`) when using `google_cse`. |

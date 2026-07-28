@@ -39,9 +39,10 @@ import db  # noqa: E402
 import smart_memory  # noqa: E402
 import web_search  # noqa: E402
 from ai_parser import (  # noqa: E402
-    CHATBOT_FALLBACK_MODEL,
+    CHATBOT_FALLBACK_MODELS,
     CHATBOT_MODEL,
     GEMINI_MODEL,
+    GEMINI_FALLBACK_MODELS,
     ChatAnalysis,
     analyze_message,
     build_payload,
@@ -1329,8 +1330,8 @@ async def run_detection(
         await bot.notify_owner_once_today(
             "gemini_busy",
             f"🤖 My AI keeps answering 'overloaded' (503) for `{GEMINI_MODEL}`, and "
-            "the backup model isn't getting through either, so some chat "
-            "auto-detection is being missed. If it doesn't clear up, set "
+            f"the backup models aren't getting through either ({', '.join(f'`{m}`' for m in GEMINI_FALLBACK_MODELS if m)}), "
+            "so some chat auto-detection is being missed. If it doesn't clear up, set "
             "GEMINI_MODEL in .env to another model and restart. /debt and /remind "
             "commands and scheduled reminders still work normally.",
         )
@@ -2329,9 +2330,10 @@ async def chatbot_show(interaction: discord.Interaction) -> None:
         else f"shared with detection ({len(ai_parser.detection_keys())} key(s))"
     )
     backup = (
-        f" (backup: `{CHATBOT_FALLBACK_MODEL}`)"
-        if CHATBOT_FALLBACK_MODEL and CHATBOT_FALLBACK_MODEL != CHATBOT_MODEL
+        f" (backups: {', '.join(f'`{m}`' for m in CHATBOT_FALLBACK_MODELS if m)}"
+        if CHATBOT_FALLBACK_MODELS and any(CHATBOT_FALLBACK_MODELS)
         else ""
+        + ")"
     )
     await interaction.response.send_message(
         "💬 **Chat replies**\n"

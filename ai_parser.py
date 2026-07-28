@@ -33,11 +33,12 @@ CHATBOT_MODEL = os.getenv("CHATBOT_MODEL", "").strip() or GEMINI_MODEL
 # have been retired (404). Google's bigger Flash models get oversubscribed on
 # the free tier, so the default backup is a lighter one that stays reachable.
 # Set to empty to switch the fallback off.
-GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.1-flash-lite").strip()
-CHATBOT_FALLBACK_MODEL = os.getenv("CHATBOT_FALLBACK_MODEL", "").strip() or GEMINI_FALLBACK_MODEL
+# Supports multiple fallbacks: GEMINI_FALLBACK_MODEL, GEMINI_FALLBACK_MODEL_2, etc.
+GEMINI_FALLBACK_MODELS = _api_models("GEMINI_FALLBACK_MODEL")
+CHATBOT_FALLBACK_MODELS = _api_models("CHATBOT_FALLBACK_MODEL") or GEMINI_FALLBACK_MODELS
 
-# How many numbered backup keys to look for (GEMINI_API_KEY_2 ... _20).
-_MAX_BACKUP_KEYS = 20
+# How many numbered backup keys/models to look for (GEMINI_API_KEY_2 ... _20, GEMINI_MODEL_2 ... _20).
+_MAX_BACKUP = 20
 
 # Clients are created lazily and cached per key, so importing this module never
 # needs a key (helps testing) - only the first real AI call does.
@@ -62,11 +63,29 @@ def _api_keys(prefix: str) -> list[str]:
     first = os.getenv(prefix, "").strip()
     if first:
         keys.append(first)
-    for index in range(2, _MAX_BACKUP_KEYS + 1):
+    for index in range(2, _MAX_BACKUP + 1):
         value = os.getenv(f"{prefix}_{index}", "").strip()
         if value and value not in keys:
             keys.append(value)
     return keys
+
+
+def _api_models(prefix: str) -> list[str]:
+    """Every model configured under `prefix`, in preference order.
+
+    Reads PREFIX, then PREFIX_2, PREFIX_3, ... so backups can be added just by
+    appending lines to .env. Gaps are skipped rather than treated as the end,
+    so deleting _2 doesn't silently hide _3.
+    """
+    models: list[str] = []
+    first = os.getenv(prefix, "").strip()
+    if first:
+        models.append(first)
+    for index in range(2, _MAX_BACKUP + 1):
+        value = os.getenv(f"{prefix}_{index}", "").strip()
+        if value and value not in models:
+            models.append(value)
+    return models
 
 
 def detection_keys() -> list[str]:
@@ -92,6 +111,24 @@ def _mark_key_exhausted(api_key: str) -> None:
         "API key ...%s is out of quota - skipping it for %d minutes",
         api_key[-4:], _KEY_COOLDOWN_MINUTES,
     )
+
+
+def _api_models(prefix: str) -> list[str]:
+    """Every model configured under `prefix`, in preference order.
+
+    Reads PREFIX, then PREFIX_2, PREFIX_3, ... so backups can be added just by
+    appending lines to .env. Gaps are skipped rather than treated as the end,
+    so deleting _2 doesn't silently hide _3.
+    """
+    models: list[str] = []
+    first = os.getenv(prefix, "").strip()
+    if first:
+        models.append(first)
+    for index in range(2, _MAX_BACKUP + 1):
+        value = os.getenv(f"{prefix}_{index}", "").strip()
+        if value and value not in models:
+            models.append(value)
+    return models
 
 
 def _usable_keys(keys: list[str]) -> list[str]:
@@ -274,11 +311,12 @@ _MODEL_COOLDOWN_MINUTES = 5
 _model_unavailable_until: dict[str, datetime] = {}
 
 
-def _model_chain(primary: str, fallback: str) -> list[str]:
+def _model_chain(primary: str, fallbacks: list[str]) -> list[str]:
     """The models to try, in order, without blanks or duplicates."""
     chain = [primary]
-    if fallback and fallback != primary:
-        chain.append(fallback)
+    for fb in fallbacks:
+        if fb and fb != primary and fb not in chain:
+            chain.append(fb)
     return chain
 
 
@@ -439,7 +477,7 @@ async def analyze_message(payload: str) -> tuple[Optional[ChatAnalysis], Optiona
     """
     response, error_kind = await _generate_with_retry(
         keys=detection_keys(),
-        models=_model_chain(GEMINI_MODEL, GEMINI_FALLBACK_MODEL),
+        models=_model_chain(GEMINI_MODEL, GEMINI_FALLBACK_MODELS),
         contents=payload,
         config=genai_types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
@@ -626,7 +664,7 @@ async def chat_reply(
     )
     response, error_kind = await _generate_with_retry(
         keys=chat_keys(),
-        models=_model_chain(CHATBOT_MODEL, CHATBOT_FALLBACK_MODEL),
+        models=_model_chain(CHATBOT_MODEL, CHATBOT_FALLBACK_MODELS),
         contents=payload,
         config=genai_types.GenerateContentConfig(
             system_instruction=CHATBOT_SYSTEM_PROMPT,
