@@ -145,6 +145,7 @@ class HotWindow:
 
 intents = discord.Intents.default()
 intents.message_content = True  # needs the toggle in the Discord developer portal
+intents.members = True  # needed for role-based auto-join in raffles
 
 
 class ReminderBot(commands.Bot):
@@ -702,11 +703,30 @@ def apply_analysis(
             # Auto-join the creator
             db.join_raffle(raffle_id, creator_id, creator_name, "creator")
 
+            # Auto-join members who have the configured auto-join role
+            auto_joined_count = 0
+            if auto_join_role_id and message.guild:
+                role = message.guild.get_role(auto_join_role_id)
+                if role:
+                    members_to_add: list[int] = []
+                    member_names: dict[int, str] = {}
+                    for member in role.members:
+                        if member.id != creator_id:
+                            members_to_add.append(member.id)
+                            member_names[member.id] = member.display_name
+                    if members_to_add:
+                        auto_joined_count = db.add_role_based_participants(raffle_id, members_to_add, member_names)
+
             # Format the response
             prize_str = format_money(analysis.currency or "₱", prize_amount)
             duration_str = f"{duration_minutes} minutes" if duration_minutes > 0 else "until ended manually"
             limit_str = f"{max_participants} participants" if max_participants else "unlimited participants"
-            auto_role_line = f" <@&{auto_join_role_id}> are auto-entered!" if auto_join_role_id else ""
+            if auto_joined_count > 0:
+                auto_role_line = f" <@&{auto_join_role_id}> are auto-entered! ({auto_joined_count} members joined)"
+            elif auto_join_role_id:
+                auto_role_line = f" <@&{auto_join_role_id}> are auto-entered! (no members found)"
+            else:
+                auto_role_line = ""
 
             return f"🎉 Raffle #{raffle_id} created! \"{description}\" - Prize: {prize_str} - Duration: {duration_str} - Limit: {limit_str}.{auto_role_line} Use `/raffle join` to participate — it's free!"
 
@@ -2744,6 +2764,20 @@ async def raffle_create(
     # Auto-join the creator
     db.join_raffle(raffle_id, interaction.user.id, interaction.user.display_name, "creator")
 
+    # Auto-join members who have the configured auto-join role
+    auto_joined_count = 0
+    if auto_join_role_id and interaction.guild:
+        role = interaction.guild.get_role(auto_join_role_id)
+        if role:
+            members_to_add: list[int] = []
+            member_names: dict[int, str] = {}
+            for member in role.members:
+                if member.id != interaction.user.id:
+                    members_to_add.append(member.id)
+                    member_names[member.id] = member.display_name
+            if members_to_add:
+                auto_joined_count = db.add_role_based_participants(raffle_id, members_to_add, member_names)
+
     # Format the response
     prize_str = format_money(DEFAULT_CURRENCY, prize)
     duration_str = f"{duration_minutes} minutes" if duration_minutes > 0 else "until ended manually"
@@ -2759,7 +2793,7 @@ async def raffle_create(
     embed.add_field(name="👥 Limit", value=limit_str, inline=True)
     embed.add_field(name="🎯 How to Join", value="Use `/raffle join` — it's free!", inline=False)
     if auto_join_role_id:
-        embed.add_field(name="🎖️ Auto-Join", value=f"Users with <@&{auto_join_role_id}> are automatically entered!", inline=False)
+        embed.add_field(name="🎖️ Auto-Join", value=f"Users with <@&{auto_join_role_id}> are automatically entered! ({auto_joined_count} members joined)", inline=False)
 
     await interaction.response.send_message(embed=embed, ephemeral=False)
 

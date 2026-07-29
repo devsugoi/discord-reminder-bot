@@ -988,7 +988,13 @@ def update_user_balance(
 
 def get_guild_auto_join_role(guild_id: int) -> int | None:
     """Get the configured default auto-join role ID for a guild."""
-    return get_setting(f"raffle_autorole_role_{guild_id}", "")
+    val = get_setting(f"raffle_autorole_role_{guild_id}", "")
+    if val:
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            return None
+    return None
 
 
 def set_guild_auto_join_role(guild_id: int, role_id: int | None) -> None:
