@@ -636,20 +636,20 @@ def apply_analysis(
             # Create the raffle directly
             guild_id = message.guild.id if message else None
             if not guild_id:
-                return "I can only help with raffles in servers."
+                return "Sa server lang ako pwedeng mag-raffle, sorry!"
 
-            # Creator info: from message if available, otherwise from analysis
+            # Creator info: from creator if available, otherwise from analysis
             creator_name = message.author.display_name if message else (analysis.counterparty or "unknown")
             creator_id = message.author.id if message else person_id
             if not creator_id:
-                return "Couldn't determine who's creating this raffle."
+                return "Di ko malaman kung sino'ng gumagawa ng raffle."
 
             # Use defaults if not specified
             # Reject non-money raffles — only cash prizes are supported
             if analysis.entry_cost is None and analysis.prize_description:
                 return (
-                    "ℹ️ I can only raffle **money** prizes! "
-                    "Include an amount, e.g.: *'raffle 500 pesos, prize is a game code'*."
+                    "ℹ️ Cash prizes lang ang pwede i-raffle! "
+                    "Maglagay ka ng amount, halimbawa: *'raffle 500 pesos, prize is a game code'*."
                 )
             prize_amount = analysis.entry_cost if analysis.entry_cost is not None else 100.0  # Default 100
             duration_minutes = 1  # Default 1 min if user didn't specify
@@ -669,7 +669,7 @@ def apply_analysis(
                 except:
                     duration_minutes = 1  # Default 1 min if parsing fails
 
-            description = analysis.prize_description or "A mystery prize!"
+            description = analysis.prize_description or "Mystery prize!"
             max_participants = analysis.max_participants
 
             # Calculate end time if duration specified
@@ -719,72 +719,72 @@ def apply_analysis(
 
             # Format the response
             prize_str = format_money(analysis.currency or "₱", prize_amount)
-            duration_str = f"{duration_minutes} minutes" if duration_minutes > 0 else "until ended manually"
-            limit_str = f"{max_participants} participants" if max_participants else "unlimited participants"
+            duration_str = f"{duration_minutes} minuto" if duration_minutes > 0 else "hanggang i-end manually"
+            limit_str = f"{max_participants} participants" if max_participants else "walang limit"
             if auto_joined_count > 0:
-                auto_role_line = f" <@&{auto_join_role_id}> are auto-entered! ({auto_joined_count} members joined)"
+                auto_role_line = f" <@&{auto_join_role_id}> ay auto-entered! ({auto_joined_count} members na-join)"
             elif auto_join_role_id:
-                auto_role_line = f" <@&{auto_join_role_id}> are auto-entered! (no members found)"
+                auto_role_line = f" <@&{auto_join_role_id}> ay auto-entered! (walang members nakuha)"
             else:
                 auto_role_line = ""
 
-            return f"🎉 Raffle #{raffle_id} created! \"{description}\" - Prize: {prize_str} - Duration: {duration_str} - Limit: {limit_str}.{auto_role_line} Use `/raffle join` to participate — it's free!"
+            return f"🎉 Raffle #{raffle_id} gawa na! \"{description}\" - Prize: {prize_str} - Duration: {duration_str} - Limit: {limit_str}.{auto_role_line} Gamitin ang `/raffle join` para sumali — libre lang!"
 
         elif analysis.raffle_action == "join":
             # User wants to join a raffle
             # Find active raffle in this channel and try to join it
             guild_id = message.guild.id if message else None
             if not guild_id:
-                return "I can only help with raffles in servers."
+                return "Sa server lang ako pwedeng mag-raffle, sorry!"
 
             cid = message.channel.id if message else channel_id
             raffles = db.get_active_raffles(cid, guild_id)
             if not raffles:
-                return "There are no active raffles in this channel to join."
+                return "Walang active na raffle sa channel na 'to."
 
             raffle = raffles[0]  # Most recent active raffle
             user_id = message.author.id if message else person_id
             user_name = message.author.display_name if message else (analysis.counterparty or "someone")
             if not user_id:
-                return "Couldn't determine who's trying to join."
+                return "Di ko malaman kung sino'ng sumasali."
 
             # Check if already participated
             participants = db.get_raffle_participants(raffle["id"])
             if any(p["user_id"] == user_id for p in participants):
-                return f"You're already in raffle #{raffle['id']}!"
+                return f"Na-join-an mo na 'yang raffle #{raffle['id']}!"
 
             # No balance check - joining is free!
 
             if db.join_raffle(raffle["id"], user_id, user_name, "natural_language"):
-                return f"✅ You've joined raffle #{raffle['id']}! Prize: {format_money(raffle['currency'], db._raffle_prize(raffle))}. Good luck! 🍀"
+                return f"✅ Sumali nakaa sa raffle #{raffle['id']}! Prize: {format_money(raffle['currency'], db._raffle_prize(raffle))}. Good luck! 🍀"
             else:
-                return "Failed to join raffle. Please try again."
+                return "Di maka-join sa raffle. Subukan mo ulit."
 
         elif analysis.raffle_action == "end":
             # User wants to end a raffle - check if they're the creator
             guild_id = message.guild.id if message else None
             if not guild_id:
-                return "I can only help with raffles in servers."
+                return "Sa server lang ako pwede mag-raffle, sorry!"
 
             cid = message.channel.id if message else channel_id
             raffles = db.get_active_raffles(cid, guild_id)
             if not raffles:
-                return "There are no active raffles in this channel to end."
+                return "Walang active raffle dito para i-end."
 
             raffle = raffles[0]  # Most recent active raffle
             user_id = message.author.id if message else None
             if user_id and raffle["creator_id"] != user_id:
-                return f"Only the raffle creator (<@{raffle['creator_id']}>) can end this raffle."
+                return f"Ang creator lang ng raffle (<@{raffle['creator_id']}>) ang pwedeng mag-end nito."
 
             # Actually end the raffle and pick a winner!
             result = db.end_raffle(raffle["id"])
             if not result:
-                return "Failed to end raffle — no participants or it's already ended."
+                return "Di ma-end ang raffle — walang participants o tapos na."
 
             prize_str = format_money(raffle["currency"], result["prize_pool"])
             return (
-                f"🎉 Raffle #{raffle['id']} has ended! "
-                f"**{result['winner_name']}** won {prize_str}! "
+                f"🎉 Raffle #{raffle['id']} ay tapos na! "
+                f"**{result['winner_name']}** ang nanalo ng {prize_str}! "
                 f"({result['participant_count']} participants)"
             )
 
@@ -792,23 +792,23 @@ def apply_analysis(
             # User wants to cancel a raffle - check if they're the creator
             guild_id = message.guild.id if message else None
             if not guild_id:
-                return "I can only help with raffles in servers."
+                return "Sa server lang ako pwede mag-raffle, sorry!"
 
             cid = message.channel.id if message else channel_id
             raffles = db.get_active_raffles(cid, guild_id)
             if not raffles:
-                return "There are no active raffles in this channel to cancel."
+                return "Walang active raffle dito para i-cancel."
 
             raffle = raffles[0]  # Most recent active raffle
             user_id = message.author.id if message else None
             if user_id and raffle["creator_id"] != user_id:
-                return f"Only the raffle creator (<@{raffle['creator_id']}>) can cancel this raffle."
+                return f"Ang creator lang ng raffle (<@{raffle['creator_id']}>) ang pwede mag-cancel nito."
 
             # Cancel the raffle (no refunds - joining is free)
             if db.cancel_raffle(raffle["id"]):
-                return f"🎉 Raffle #{raffle['id']} has been cancelled!"
+                return f"🎉 Raffle #{raffle['id']} nag-cancelled na!"
             else:
-                return "Failed to cancel raffle. Please try again."
+                return "Di ma-cancel ang raffle. Subukan ulit."
 
     return "Nothing to do for that event."
 
@@ -1246,14 +1246,14 @@ async def _handle_raffle_fallback(message: discord.Message, question: str) -> bo
         if desc_from:
             description = desc_from.group(1).strip().rstrip(".!?")
         else:
-            description = "A mystery prize!"
+            description = "Mystery prize!"
 
-    # Reject non-money raffles — only cash prizes are supported
-    if not money_match and description != "A mystery prize!":
+    # Only cash prizes for raffles, di pwedeng item lang
+    if not money_match and description != "Mystery prize!":
         await say(
             message,
-            "ℹ️ I can only raffle **money** prizes! "
-            "Include an amount, e.g.: *'raffle 500 pesos, prize is a game code'*."
+            "ℹ️ Cash prizes lang ang pwede i-raffle! "
+            "Maglagay ka ng amount, halimbawa: *'raffle 500 pesos, prize is a game code'*."
         )
         return True
 
@@ -1962,8 +1962,8 @@ async def delivery_loop() -> None:
                 if channel:
                     prize_str = format_money(raffle["currency"], result["prize_pool"])
                     await channel.send(
-                        f"⏰ Time's up! Raffle #{raffle['id']} has ended! "
-                        f"**{result['winner_name']}** won {prize_str}! "
+                        f"⏰ Oras na! Tapos na ang Raffle #{raffle['id']}! "
+                        f"**{result['winner_name']}** ay nanalo ng {prize_str}! "
                         f"({result['participant_count']} participants)"
                     )
                     logger.info(
@@ -2656,7 +2656,7 @@ _STATUS_VERBS = {
 # Raffle command group - public so anyone can use
 raffle_group = app_commands.Group(
     name="raffle",
-    description="Join raffles and win virtual currency",
+    description="Sumali sa raffles at manalo ng virtual currency",
     extras={"public": True},
 )
 
@@ -2710,12 +2710,12 @@ async def settings_status(
 
 
 # Raffle command implementations
-@raffle_group.command(name="create", description="Create a new raffle")
+@raffle_group.command(name="create", description="Gumawa ng bagong raffle")
 @app_commands.describe(
-    prize="Prize money the winner will receive (leave blank for random amount)",
-    max_participants="Maximum number of participants (0 = unlimited)",
-    duration_minutes="How long the raffle runs (default 1 min)",
-    description="Description of what's being raffled"
+    prize="Prize money na makukuha ng winner (iwanang blank para random)",
+    max_participants="Max number ng participants (0 = unlimited)",
+    duration_minutes="Gaano katagal ang raffle (default 1 min)",
+    description="Description kung anong nira-raffle"
 )
 async def raffle_create(
     interaction: discord.Interaction,
@@ -2728,7 +2728,7 @@ async def raffle_create(
     # Anyone can create a raffle
     guild_id = interaction.guild.id if interaction.guild else None
     if not guild_id:
-        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        await interaction.response.send_message("Sa server lang pwedeng gumamit ng command na 'to.", ephemeral=True)
         return
 
     # If no prize specified, generate a random amount between 100-5000
@@ -2741,7 +2741,7 @@ async def raffle_create(
     if duration_minutes > 0:
         ends_at = (datetime.now() + timedelta(minutes=duration_minutes)).isoformat(timespec="minutes")
 
-    # Create the raffle
+    # Gawa ang raffle
     # Get the guild's default auto-join role if auto-join is enabled
     auto_join_role_id = None
     if db.get_guild_auto_join_enabled(guild_id):
@@ -2778,197 +2778,197 @@ async def raffle_create(
             if members_to_add:
                 auto_joined_count = db.add_role_based_participants(raffle_id, members_to_add, member_names)
 
-    # Format the response
+    # I-format ang response
     prize_str = format_money(DEFAULT_CURRENCY, prize)
-    duration_str = f"{duration_minutes} minutes" if duration_minutes > 0 else "until ended manually"
-    limit_str = f"{max_participants} participants" if max_participants > 0 else "unlimited participants"
+    duration_str = f"{duration_minutes} minutes" if duration_minutes > 0 else "hanggang manually i-end"
+    limit_str = f"{max_participants} participants" if max_participants > 0 else "walang limit"
 
     embed = discord.Embed(
-        title=f"🎉 Raffle #{raffle_id} Created!",
-        description=description or "No description provided",
+        title=f"🎉 Raffle #{raffle_id} Gawa Na!",
+        description=description or "Walang description na nilagay",
         color=0xFFD700  # Gold color
     )
     embed.add_field(name="💰 Prize", value=prize_str, inline=True)
     embed.add_field(name="⏰ Duration", value=duration_str, inline=True)
     embed.add_field(name="👥 Limit", value=limit_str, inline=True)
-    embed.add_field(name="🎯 How to Join", value="Use `/raffle join` — it's free!", inline=False)
+    embed.add_field(name="🎯 Paano Sumali", value="Gamitin ang `/raffle join` — libre lang!", inline=False)
     if auto_join_role_id:
-        embed.add_field(name="🎖️ Auto-Join", value=f"Users with <@&{auto_join_role_id}> are automatically entered! ({auto_joined_count} members joined)", inline=False)
+        embed.add_field(name="🎖️ Auto-Join", value=f"Mga users na may <@&{auto_join_role_id}> ay automatic na sasali! ({auto_joined_count} members ang sumali)", inline=False)
 
     await interaction.response.send_message(embed=embed, ephemeral=False)
 
 
-@raffle_group.command(name="join", description="Join an active raffle")
+@raffle_group.command(name="join", description="Sumali sa active raffle")
 @app_commands.describe(
-    raffle_id="ID of the raffle to join (leave blank to join most recent active raffle)"
+    raffle_id="ID ng raffle na sasalihan (iwanang blank para sa pinaka-recent na active raffle)"
 )
 async def raffle_join(
     interaction: discord.Interaction,
     raffle_id: int | None = None
 ) -> None:
-    """Join a raffle"""
+    """Sumali sa raffle"""
     guild_id = interaction.guild.id if interaction.guild else None
     if not guild_id:
-        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        await interaction.response.send_message("Sa server lang pwedeng gumamit ng command na 'to.", ephemeral=True)
         return
 
     user_id = interaction.user.id
     user_name = interaction.user.display_name
 
-    # Get the raffle to join
+    # Kunin ang raffle na sasalihan
     if raffle_id is None:
         # Get most recent active raffle in this guild/channel
         raffles = db.get_active_raffles(interaction.channel_id, guild_id)
         if not raffles:
-            await interaction.response.send_message("No active raffles found in this channel.", ephemeral=True)
+            await interaction.response.send_message("Walang active na raffle sa channel na 'to.", ephemeral=True)
             return
         raffle = raffles[0]  # Most recent
     else:
         raffle = db.get_raffle(raffle_id)
         if not raffle:
-            await interaction.response.send_message(f"Raffle #{raffle_id} not found.", ephemeral=True)
+            await interaction.response.send_message(f"Wala namang Raffle #{raffle_id}.", ephemeral=True)
             return
         # Check if raffle is in the same guild/channel
         if raffle["guild_id"] != guild_id or raffle["channel_id"] != interaction.channel_id:
-            await interaction.response.send_message("That raffle is not in this channel.", ephemeral=True)
+            await interaction.response.send_message("Wala sa channel na 'to ang raffle na 'yan.", ephemeral=True)
             return
 
     # Check if raffle is still active
     if not raffle["active"]:
-        await interaction.response.send_message(f"Raffle #{raffle['id']} has already ended.", ephemeral=True)
+        await interaction.response.send_message(f"Tapos na ang Raffle #{raffle['id']}.", ephemeral=True)
         return
 
     # Check if user already participated
     participants = db.get_raffle_participants(raffle["id"])
     if any(p["user_id"] == user_id for p in participants):
-        await interaction.response.send_message(f"You're already in raffle #{raffle['id']}!", ephemeral=True)
+        await interaction.response.send_message(f"Naka-join ka na sa Raffle #{raffle['id']}!", ephemeral=True)
         return
 
     # Check if raffle is full
     if raffle["max_participants"] and len(participants) >= raffle["max_participants"]:
-        await interaction.response.send_message(f"Raffle #{raffle['id']} is already full!", ephemeral=True)
+        await interaction.response.send_message(f"Puno na ang Raffle #{raffle['id']}!", ephemeral=True)
         return
 
     # Add participant (joining is free!)
     if db.join_raffle(raffle["id"], user_id, user_name, "command"):
         await interaction.response.send_message(
-            f"✅ You've joined raffle #{raffle['id']}! "
+            f"✅ Sumali ka na sa Raffle #{raffle['id']}! "
             f"Prize pool: {format_money(raffle['currency'], db._raffle_prize(raffle))}. "
             f"Good luck! 🍀",
             ephemeral=False
         )
     else:
-        await interaction.response.send_message("Failed to join raffle. Please try again.", ephemeral=True)
+        await interaction.response.send_message("Di maka-join sa raffle. Subukan mo ulit.", ephemeral=True)
 
 
-@raffle_group.command(name="leave", description="Leave a raffle you've joined")
+@raffle_group.command(name="leave", description="Umalis sa raffle na sinalihan mo")
 @app_commands.describe(
-    raffle_id="ID of the raffle to leave (leave blank to leave most recent raffle you joined)"
+    raffle_id="ID ng raffle na aalisan (iwanang blank para sa pinaka-recent raffle na sinalihan mo)"
 )
 async def raffle_leave(
     interaction: discord.Interaction,
     raffle_id: int | None = None
 ) -> None:
-    """Leave a raffle"""
+    """Umalis sa raffle"""
     guild_id = interaction.guild.id if interaction.guild else None
     if not guild_id:
-        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        await interaction.response.send_message("Sa server lang pwedeng gumamit ng command na 'to.", ephemeral=True)
         return
 
     user_id = interaction.user.id
 
-    # Get the raffle to leave
+    # Kunin ang raffle na aalisan
     if raffle_id is None:
         # Get raffles the user has joined in this guild/channel
         participations = db.get_user_raffles(user_id, guild_id, interaction.channel_id)
         if not participations:
-            await interaction.response.send_message("You haven't joined any raffles in this channel.", ephemeral=True)
+            await interaction.response.send_message("Di ka pa sumasali sa kahit anong raffle sa channel na 'to.", ephemeral=True)
             return
         raffle = participations[0]  # Most recent
     else:
         raffle = db.get_raffle(raffle_id)
         if not raffle:
-            await interaction.response.send_message(f"Raffle #{raffle_id} not found.", ephemeral=True)
+            await interaction.response.send_message(f"Wala namang Raffle #{raffle_id}.", ephemeral=True)
             return
         # Check if raffle is in the same guild/channel
         if raffle["guild_id"] != guild_id or raffle["channel_id"] != interaction.channel_id:
-            await interaction.response.send_message("That raffle is not in this channel.", ephemeral=True)
+            await interaction.response.send_message("Wala sa channel na 'to ang raffle na 'yan.", ephemeral=True)
             return
 
     # Check if raffle is still active
     if not raffle["active"]:
-        await interaction.response.send_message(f"Raffle #{raffle['id']} has already ended.", ephemeral=True)
+        await interaction.response.send_message(f"Tapos na ang Raffle #{raffle['id']}.", ephemeral=True)
         return
 
     # Check if user actually participated
     participant = db.get_raffle_participant(raffle["id"], user_id)
     if not participant:
-        await interaction.response.send_message(f"You're not in raffle #{raffle['id']}.", ephemeral=True)
+        await interaction.response.send_message(f"Wala ka naman sa Raffle #{raffle['id']}.", ephemeral=True)
         return
 
     # Remove participant (joining was free, so no refund needed)
     if db.leave_raffle(raffle["id"], user_id):
         await interaction.response.send_message(
-            f"✅ You've left raffle #{raffle['id']}.",
+            f"✅ Umalis ka na sa Raffle #{raffle['id']}.",
             ephemeral=False
         )
     else:
-        await interaction.response.send_message("Failed to leave raffle. Please try again.", ephemeral=True)
+        await interaction.response.send_message("Di maka-leave sa raffle. Subukan mo ulit.", ephemeral=True)
 
 
-@raffle_group.command(name="end", description="End a raffle and pick a winner (creator only)")
+@raffle_group.command(name="end", description="I-end ang raffle at pumili ng winner (creator lang)")
 @app_commands.describe(
-    raffle_id="ID of the raffle to end"
+    raffle_id="ID ng raffle na i-end"
 )
 async def raffle_end(
     interaction: discord.Interaction,
     raffle_id: int
 ) -> None:
-    """End a raffle and pick a winner"""
+    """I-end ang raffle at pumili ng winner"""
     guild_id = interaction.guild.id if interaction.guild else None
     if not guild_id:
-        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        await interaction.response.send_message("Sa server lang pwedeng gumamit ng command na 'to.", ephemeral=True)
         return
 
     user_id = interaction.user.id
 
-    # Get the raffle
+    # Kunin ang raffle
     raffle = db.get_raffle(raffle_id)
     if not raffle:
-        await interaction.response.send_message(f"Raffle #{raffle_id} not found.", ephemeral=True)
+        await interaction.response.send_message(f"Wala namang Raffle #{raffle_id}.", ephemeral=True)
         return
 
     # Check if raffle is in the same guild/channel
     if raffle["guild_id"] != guild_id or raffle["channel_id"] != interaction.channel_id:
-        await interaction.response.send_message("That raffle is not in this channel.", ephemeral=True)
+        await interaction.response.send_message("Wala sa channel na 'to ang raffle na 'yan.", ephemeral=True)
         return
 
     # Check if raffle is still active
     if not raffle["active"]:
-        await interaction.response.send_message(f"Raffle #{raffle_id} has already ended.", ephemeral=True)
+        await interaction.response.send_message(f"Tapos na ang Raffle #{raffle_id}.", ephemeral=True)
         return
 
     # Check if user is the creator
     if raffle["creator_id"] != user_id:
-        await interaction.response.send_message("Only the raffle creator can end the raffle.", ephemeral=True)
+        await interaction.response.send_message("Ang creator lang ng raffle ang pwedeng mag-end nito.", ephemeral=True)
         return
 
     # Defer response since winner selection might take a moment
     await interaction.response.defer(ephemeral=False)
 
     # Add 3-second loading animation with influencer style
-    await interaction.followup.send("🎵 *SPINNING THE WHEEL...* 🎵")
+    await interaction.followup.send("🎵 *PINAPA-IKOT ANG GULONG...* 🎵")
     await asyncio.sleep(1)
-    await interaction.edit_original_response(content="🎵 *ALMOST THERE...* 🎵")
+    await interaction.edit_original_response(content="🎵 *MALAPIT NA...* 🎵")
     await asyncio.sleep(1)
-    await interaction.edit_original_response(content="🎵 *AND THE WINNER IS...* 🎵")
+    await interaction.edit_original_response(content="🎵 *AT ANG WINNER AY...* 🎵")
     await asyncio.sleep(1)
 
     # End the raffle and get winner
     result = db.end_raffle(raffle_id)
 
     if not result:
-        await interaction.edit_original_response(content="❌ Failed to end raffle. Please try again.")
+        await interaction.edit_original_response(content="❌ Di ma-end ang raffle. Subukan mo ulit.")
         return
 
     winner_id = result["winner_id"]
@@ -2982,8 +2982,8 @@ async def raffle_end(
 
         # Create celebration message
         embed = discord.Embed(
-            title=f"🎉🎉🎉 RAFFLE #{raffle_id} ENDED! 🎉🎉🎉",
-            description=f"**{winner_name.mention if hasattr(winner_name, 'mention') else winner_name}** won **{format_money(raffle['currency'], prize_amount)}**! 💰",
+            title=f"🎉🎉🎉 RAFFLE #{raffle_id} TAPOS NA! 🎉🎉🎉",
+            description=f"**{winner_name.mention if hasattr(winner_name, 'mention') else winner_name}** ay nanalo ng **{format_money(raffle['currency'], prize_amount)}**! 💰",
             color=0xFF0000  # Red for excitement
         )
         embed.add_field(
@@ -2993,7 +2993,7 @@ async def raffle_end(
             inline=False
         )
         embed.add_field(
-            name="💰 New Balance",
+            name="💰 Bagong Balance",
             value=f"{winner_name.mention if hasattr(winner_name, 'mention') else winner_name}: {format_money(raffle['currency'], new_balance)}",
             inline=False
         )
@@ -3001,10 +3001,10 @@ async def raffle_end(
         # Add some hype messages
         import random
         hype_messages = [
-            "STAY TUNED FOR THE NEXT BIG GIVEAWAY!",
-            "LIKE AND SUBSCRIBE FOR MORE CHANCES TO WIN!",
-            "YOU COULD BE NEXT - KEEP PARTICIPATING!",
-            "HIT THAT NOTIFICATION BELL SO YOU NEVER MISS A GIVEAWAY!",
+            "ABANGAN ANG SUSUNOD NA BIG GIVEAWAY!",
+            "MAG-LIKE AT MAG-SUBSCRIBE PARA SA MORE CHANCES TO WIN!",
+            "PWEDENG IKAW NA ANG SUSUNOD - KEEP PARTICIPATING!",
+            "I-ON ANG NOTIFICATION BELL PARA DI KA MISS SA GIVEAWAY!",
             "THANKS FOR PLAYING - MORE PRIZES COMING SOON!"
         ]
         embed.add_field(
@@ -3016,42 +3016,42 @@ async def raffle_end(
         await interaction.edit_original_response(content="", embed=embed)
     else:
         # No winner (no participants or error)
-        await interaction.edit_original_response(content="😔 No participants in the raffle - nobody wins this time.")
+        await interaction.edit_original_response(content="😔 Walang participants sa raffle — walang mananalo ngayon.")
 
 
-@raffle_group.command(name="list", description="List active raffles in this channel")
+@raffle_group.command(name="list", description="I-list ang mga active raffles sa channel na 'to")
 async def raffle_list(interaction: discord.Interaction) -> None:
-    """List active raffles"""
+    """Lista ng active raffles"""
     guild_id = interaction.guild.id if interaction.guild else None
     if not guild_id:
-        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        await interaction.response.send_message("Sa server lang pwedeng gumamit ng command na 'to.", ephemeral=True)
         return
 
     raffles = db.get_active_raffles(interaction.channel_id, guild_id)
 
     if not raffles:
-        await interaction.response.send_message("No active raffles in this channel.", ephemeral=True)
+        await interaction.response.send_message("Walang active na raffle sa channel na 'to.", ephemeral=True)
         return
 
     embed = discord.Embed(
-        title="🎟️ Active Raffles",
+        title="🎟️ Mga Active na Raffle",
         color=0x00FF00  # Green
     )
 
     for raffle in raffles[:10]:  # Limit to 10 to avoid too long messages
-        status = "🟢 Active" if raffle["active"] else "🔴 Ended"
+        status = "🟢 Active" if raffle["active"] else "🔴 Tapos na"
         ends_at_str = ""
         if raffle["ends_at"]:
             ends_at = datetime.fromisoformat(raffle["ends_at"])
-            ends_at_str = f"\nEnds: {ends_at.strftime('%m/%d %H:%M')}"
+            ends_at_str = f"\nMatatapos: {ends_at.strftime('%m/%d %H:%M')}"
 
         participant_count = len(db.get_raffle_participants(raffle["id"]))
         limit_str = f"/{raffle['max_participants']}" if raffle['max_participants'] else "/∞"
 
         embed.add_field(
-            name=f"Raffle #{raffle['id']} - {raffle['prize_description'] or 'No description'}",
+            name=f"Raffle #{raffle['id']} - {raffle['prize_description'] or 'Walang description'}",
             value=f"💰 Prize: {format_money(raffle['currency'], db._raffle_prize(raffle))}\n"
-                  f"👥 {participant_count}{limit_str} joined\n"
+                  f"👥 {participant_count}{limit_str} sumali\n"
                   f"{status}{ends_at_str}",
             inline=True
         )
@@ -3059,28 +3059,28 @@ async def raffle_list(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(embed=embed, ephemeral=False)
 
 
-@raffle_group.command(name="info", description="Get detailed info about a raffle")
+@raffle_group.command(name="info", description="Tingnan ang detailed info ng isang raffle")
 @app_commands.describe(
-    raffle_id="ID of the raffle to get info about"
+    raffle_id="ID ng raffle na gusto mong malaman ang info"
 )
 async def raffle_info(
     interaction: discord.Interaction,
     raffle_id: int
 ) -> None:
-    """Get detailed raffle info"""
+    """Kunin ang detailed info ng raffle"""
     guild_id = interaction.guild.id if interaction.guild else None
     if not guild_id:
-        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        await interaction.response.send_message("Sa server lang pwedeng gumamit ng command na 'to.", ephemeral=True)
         return
 
     raffle = db.get_raffle(raffle_id)
     if not raffle:
-        await interaction.response.send_message(f"Raffle #{raffle_id} not found.", ephemeral=True)
+        await interaction.response.send_message(f"Wala namang Raffle #{raffle_id}.", ephemeral=True)
         return
 
     # Check if raffle is in the same guild/channel
     if raffle["guild_id"] != guild_id or raffle["channel_id"] != interaction.channel_id:
-        await interaction.response.send_message("That raffle is not in this channel.", ephemeral=True)
+        await interaction.response.send_message("Wala sa channel na 'to ang raffle na 'yan.", ephemeral=True)
         return
 
     participants = db.get_raffle_participants(raffle["id"])
@@ -3088,15 +3088,15 @@ async def raffle_info(
 
     embed = discord.Embed(
         title=f"🎟️ Raffle #{raffle_id} Info",
-        description=raffle["prize_description"] or "No description provided",        color=0x0099FF  # Blue
+        description=raffle["prize_description"] or "Walang description na nilagay",        color=0x0099FF  # Blue
     )
 
     # Basic info
     embed.add_field(
         name="📋 Basic Info",
         value=f"• Creator: {raffle['creator_name']}\n"
-              f"• Created: {datetime.fromisoformat(raffle['created_at']).strftime('%m/%d %H:%M')}\n"
-              f"• Status: {'🟢 Active' if raffle['active'] else '🔴 Ended'}",
+              f"• Ginawa: {datetime.fromisoformat(raffle['created_at']).strftime('%m/%d %H:%M')}\n"
+              f"• Status: {'🟢 Active' if raffle['active'] else '🔴 Tapos na'}",
         inline=True
     )
 
@@ -3105,15 +3105,15 @@ async def raffle_info(
         name="💰 Prize Info",
         value=f"• Prize: {format_money(raffle['currency'], db._raffle_prize(raffle))}\n"
               f"• Currency: {raffle['currency']}\n"
-              f"• {'Unlimited' if not raffle['max_participants'] else raffle['max_participants']} max participants",
+              f"• {'Walang limit' if not raffle['max_participants'] else raffle['max_participants']} max participants",
         inline=True
     )
 
     # Participation info
     embed.add_field(
         name="👥 Participants",
-        value=f"• Current: {participant_count}\n"
-              f"• {'Full' if raffle['max_participants'] and participant_count >= raffle['max_participants'] else 'Open'}",
+        value=f"• Ngayon: {participant_count}\n"
+              f"• {'Puno na' if raffle['max_participants'] and participant_count >= raffle['max_participants'] else 'Open pa'}",
         inline=True
     )
 
@@ -3126,18 +3126,18 @@ async def raffle_info(
             minutes, seconds = divmod(remainder, 60)
             time_str = f"{hours}h {minutes}m {seconds}s"
         else:
-            time_str = "Ended"
+            time_str = "Tapos na"
         embed.add_field(
-            name="⏰ Timing",
-            value=f"• Ends: {ends_at.strftime('%m/%d %H:%M')}\n"
-                  f"• Time left: {time_str}",
+            name="⏰ Oras",
+            value=f"• Matatapos: {ends_at.strftime('%m/%d %H:%M')}\n"
+                  f"• Natitirang oras: {time_str}",
             inline=True
         )
     else:
         embed.add_field(
-            name="⏰ Timing",
-            value="• Ends: When ended manually\n"
-                  f"• Duration: Indefinite",
+            name="⏰ Oras",
+            value="• Matatapos: Kapag mano-manong ni-end\n"
+                  f"• Duration: Walang taning",
             inline=True
         )
 
@@ -3147,28 +3147,28 @@ async def raffle_info(
         recent_names = [p["user_name"] for p in recent]
         recent_text = "\n".join([f"• {name}" for name in recent_names])
         if len(participants) > 5:
-            recent_text += f"\n• ...and {len(participants) - 5} more"
+            recent_text += f"\n• ...at {len(participants) - 5} pang iba"
         embed.add_field(
-            name="👥 Recent Participants",
-            value=recent_text or "None",
+            name="👥 Mga Kamakailang Sumali",
+            value=recent_text or "Wala pa",
             inline=False
         )
 
     await interaction.response.send_message(embed=embed, ephemeral=False)
 
 
-@raffle_group.command(name="balance", description="Check your or someone's virtual currency balance")
+@raffle_group.command(name="balance", description="Tignan ang virtual currency balance mo o ng iba")
 @app_commands.describe(
-    user="User to check balance for (leave blank for yourself)"
+    user="User na gusto mong i-check ang balance (iwanang blank para sa'yo)"
 )
 async def raffle_balance(
     interaction: discord.Interaction,
     user: discord.Member | None = None
 ) -> None:
-    """Check balance"""
+    """Tignan ang balance"""
     guild_id = interaction.guild.id if interaction.guild else None
     if not guild_id:
-        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        await interaction.response.send_message("Sa server lang pwedeng gumamit ng command na 'to.", ephemeral=True)
         return
 
     target_user = user or interaction.user
@@ -3178,42 +3178,42 @@ async def raffle_balance(
     balance, currency = db.get_user_balance(user_id, guild_id)
 
     embed = discord.Embed(
-        title=f"💰 {user_name}'s Balance",
+        title=f"💰 Balance ni {user_name}",
         description=f"{format_money(currency, balance)}",
         color=0x00FF00 if balance >= 0 else 0xFF0000  # Green if positive, red if negative
     )
 
     if user_id == interaction.user.id:
-        embed.set_footer(text="Winning raffles will add to your balance!")
+        embed.set_footer(text="Manalo ng raffle para dumami ang balance mo!")
     else:
-        embed.set_footer(text=f"Balance for {user_name}")
+        embed.set_footer(text=f"Balance ni {user_name}")
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@raffle_group.command(name="leaderboard", description="Top 5 richest users and your rank")
+@raffle_group.command(name="leaderboard", description="Top 5 na pinakamayaman at rank mo")
 async def raffle_leaderboard(interaction: discord.Interaction) -> None:
-    """Show the top 5 balances and the user's rank."""
+    """I-display ang top 5 balances at rank ng user."""
     guild_id = interaction.guild.id if interaction.guild else None
     if not guild_id:
-        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        await interaction.response.send_message("Sa server lang pwedeng gumamit ng command na 'to.", ephemeral=True)
         return
 
-    # Get top 5
+    # Kunin ang top 5
     top = db.get_top_balances(guild_id, limit=5)
 
-    # Get requesting user's rank
+    # Kunin ang rank ng requesting user
     user_id = interaction.user.id
     user_rank = db.get_user_balance_rank(guild_id, user_id)
     user_balance, user_currency = db.get_user_balance(user_id, guild_id)
 
     embed = discord.Embed(
-        title="🏆 Richest Members",
+        title="🏆 Mga Pinakamayaman",
         color=0xFFD700  # Gold
     )
 
     if not top:
-        embed.description = "No balances yet — be the first to win a raffle!"
+        embed.description = "Wala pang balance — ikaw na maunang manalo ng raffle!"
     else:
         trophy = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
         lines = []
@@ -3226,14 +3226,14 @@ async def raffle_leaderboard(interaction: discord.Interaction) -> None:
     # Show user's own position
     if user_rank is not None:
         embed.add_field(
-            name="📍 Your Position",
-            value=f"You're **#{user_rank}** with {format_money(user_currency, user_balance)}",
+            name="📍 Posisyon Mo",
+            value=f"Ika-**#{user_rank}** ka with {format_money(user_currency, user_balance)}",
             inline=False,
         )
     else:
         embed.add_field(
-            name="📍 Your Position",
-            value=f"You have {format_money(user_currency, user_balance)} — win a raffle to climb the ranks!",
+            name="📍 Posisyon Mo",
+            value=f"Meron kang {format_money(user_currency, user_balance)} — sumali sa raffle para gumaling ang rank!",
             inline=False,
         )
 
@@ -3241,15 +3241,15 @@ async def raffle_leaderboard(interaction: discord.Interaction) -> None:
 
 
 # Role-based auto-join configuration
-@raffle_group.command(name="autorole", description="Configure role-based auto-join for raffles (admin only)")
+@raffle_group.command(name="autorole", description="I-configure ang role-based auto-join para sa raffles (admin lang)")
 @app_commands.describe(
-    role="Role to automatically add to raffles (leave blank to disable)",
-    enabled="Whether to enable role-based auto-join"
+    role="Role na automatic sasali sa mga raffles (iwanang blank para i-disable)",
+    enabled="Kung i-enable ang role-based auto-join"
 )
 @app_commands.choices(
     enabled=[
-        app_commands.Choice(name="Enable", value="true"),
-        app_commands.Choice(name="Disable", value="false")
+        app_commands.Choice(name="I-enable", value="true"),
+        app_commands.Choice(name="I-disable", value="false")
     ]
 )
 @app_commands.checks.has_permissions(manage_roles=True)
@@ -3258,34 +3258,34 @@ async def raffle_autorole(
     enabled: app_commands.Choice[str],
     role: discord.Role | None = None
 ) -> None:
-    """Configure role-based auto-join"""
+    """I-configure ang role-based auto-join"""
     guild_id = interaction.guild.id if interaction.guild else None
     if not guild_id:
-        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        await interaction.response.send_message("Sa server lang pwedeng gumamit ng command na 'to.", ephemeral=True)
         return
 
     if not await ensure_owner(interaction):
         # Only owner can configure this for now - later we could allow admins with permissions
-        await interaction.response.send_message("Only the bot owner can configure auto-join roles.", ephemeral=True)
+        await interaction.response.send_message("Ang bot owner lang ang pwedeng mag-configure ng auto-join roles.", ephemeral=True)
         return
 
     role_id = role.id if role else None
-    role_name = role.name if role else "None"
+    role_name = role.name if role else "Wala"
 
     # Set the guild's auto-join role and enable/disable status
     db.set_guild_auto_join_role(guild_id, role_id)
     db.set_guild_auto_join_enabled(guild_id, enabled.value == "true")
 
-    status = "enabled" if enabled.value == "true" else "disabled"
+    status = "na-enable" if enabled.value == "true" else "na-disable"
     if role_id:
         await interaction.response.send_message(
             f"✅ Role-based auto-join {status}! "
-            f"Members with the **{role_name}** role will be automatically added to new raffles.",
+            f"Mga members na may **{role_name}** role ay automatic na sasali sa bagong raffles.",
             ephemeral=True
         )
     else:
         await interaction.response.send_message(
-            f"✅ Role-based auto-join {status}. No automatic role-based joining will occur.",
+            f"✅ Role-based auto-join {status}. Walang automatic na pagsali via role.",
             ephemeral=True
         )
 
@@ -3294,9 +3294,9 @@ async def raffle_autorole(
 @raffle_autorole.error
 async def raffle_autorole_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
     if isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message("You need the 'Manage Roles' permission to use this command.", ephemeral=True)
+        await interaction.response.send_message("Kelangan mo ng 'Manage Roles' na permission para magamit ang command na 'to.", ephemeral=True)
     else:
-        await interaction.response.send_message("An error occurred while processing this command.", ephemeral=True)
+        await interaction.response.send_message("May error na nangyari habang pina-process ang command.", ephemeral=True)
 
 
 # Add the raffle group to the bot's command tree
