@@ -128,6 +128,44 @@ Be generous - if there's any chance memory would help, say true."""
         return False
 
 
+def extract_behavior_instruction(user_message: str, bot_reply: str) -> Optional[dict[str, str]]:
+    """Extract a compact instruction from a user message when it should become memory.
+
+    Returns a small dictionary describing the memory to persist, or None if the
+    exchange does not contain a durable behavior instruction.
+    """
+    text = (user_message + " " + bot_reply).lower()
+
+    if "speak in english" in text or "speak english" in text or "use english" in text:
+        if "everyone" in text or "this server" in text or "server" in text:
+            return {
+                "scope": "guild",
+                "memory_key": "language_preference",
+                "memory_value": "English",
+                "reason": "Server-wide language preference",
+            }
+
+    if "remember past conversations" in text or "remember the past conversations" in text:
+        if "this server" in text or "server" in text or "everyone" in text:
+            return {
+                "scope": "guild",
+                "memory_key": "server_topic_memory",
+                "memory_value": "Remember past conversations and topics",
+                "reason": "Server-wide topic memory",
+            }
+
+    if "speak in tagalog" in text or "speak tagalog" in text or "use tagalog" in text:
+        if "everyone" in text or "this server" in text or "server" in text:
+            return {
+                "scope": "guild",
+                "memory_key": "language_preference",
+                "memory_value": "Tagalog",
+                "reason": "Server-wide language preference",
+            }
+
+    return None
+
+
 def might_contain_saveable_info(message_text: str, bot_reply: str) -> bool:
     """Quick pattern check if this exchange might contain information worth saving.
 
@@ -352,6 +390,7 @@ async def save_conversation_memory(
     user_message: str,
     bot_reply: str,
     author_name: str,
+    guild_id: Optional[int] = None,
 ) -> bool:
     """Save important information from a conversation if it contains anything valuable.
 
@@ -361,6 +400,14 @@ async def save_conversation_memory(
     # Quick pattern check first (no tokens)
     if not might_contain_saveable_info(user_message, bot_reply):
         return False
+
+    instruction = extract_behavior_instruction(user_message, bot_reply)
+    if instruction is not None:
+        import db
+        if instruction.get("scope") == "guild" and guild_id is not None:
+            db.save_guild_memory(guild_id, instruction["memory_key"], instruction["memory_value"], "")
+            logger.info("Saved guild memory for guild %s: %s", guild_id, instruction["memory_value"])
+            return True
 
     # Try to extract memorable info
     result = await analyze_for_memory(user_message, bot_reply, author_name)

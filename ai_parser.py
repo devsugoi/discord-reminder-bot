@@ -672,6 +672,7 @@ async def chat_reply(
     user_id: int | None = None,
     mentioned_user_ids: list[int] | None = None,
     image_datas: list[tuple[bytes, str]] | None = None,
+    guild_id: int | None = None,
 ) -> tuple[Optional[str], Optional[str]]:
     """Answer one @mention conversationally.
 
@@ -709,6 +710,16 @@ async def chat_reply(
             user_context = db.build_user_context(user_id, mentioned_user_ids)
             if user_context:
                 logger.debug("Loaded user memory context (mentioned users)")
+
+    if guild_id:
+        import db
+        guild_context = db.build_guild_context(guild_id)
+        if guild_context:
+            if user_context:
+                user_context = f"{user_context}\n\n{guild_context}"
+            else:
+                user_context = guild_context
+            logger.debug("Loaded guild memory context")
 
     image_count = len(image_datas) if image_datas else 0
     payload = build_chat_payload(

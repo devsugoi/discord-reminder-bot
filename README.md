@@ -180,6 +180,10 @@ The bot remembers user preferences and personal context across conversations usi
 
 ### What It Remembers
 
+The memory system now supports two scopes:
+- **Personal memory** for one user’s preferences, nicknames, and personal context.
+- **Server memory** for shared behavior rules and topic context that should apply to the whole server.
+
 **Nicknames (instant, zero tokens):**
 - `@bot call @Doc as DOY`
 - `@bot gusto ko tawag mo kay @Doc lagi ay DOY`
@@ -222,6 +226,17 @@ User: @bot what do I do for work?
 [AI checks if memory needed: ~50 tokens]
 Bot: You work as a data scientist!
 ```
+
+### Memory Commands
+
+You can also control the memory directly in chat:
+
+- `@bot show server memory` → shows the compact server-wide memories the bot has saved.
+- `@bot clear server memory` → clears the server-wide memories for that server.
+- `@bot show my memory` → shows your personal memories.
+- `@bot clear my memory` → clears your personal memories.
+
+These commands are intentionally simple so the bot can be transparent about what it remembers and easy to reset.
 
 ### Token Usage
 

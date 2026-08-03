@@ -130,6 +130,17 @@ def init() -> None:
             )"""
         )
         conn.execute(
+            """CREATE TABLE IF NOT EXISTS guild_memory (
+                guild_id INTEGER NOT NULL,
+                memory_key TEXT NOT NULL,
+                memory_value TEXT NOT NULL,
+                context TEXT NOT NULL DEFAULT '',  -- optional: what this applies to (e.g., a channel or topic)
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, memory_key, context)
+            )"""
+        )
+        conn.execute(
             """CREATE TABLE IF NOT EXISTS raffles (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 prize_description TEXT NOT NULL,
@@ -636,6 +647,61 @@ def get_user_memory(user_id: int, memory_key: str, context: str = "") -> str | N
         return row["memory_value"] if row else None
 
 
+def save_guild_memory(
+    guild_id: int,
+    memory_key: str,
+    memory_value: str,
+    context: str = ""
+) -> None:
+    """Store or update a server-wide memory."""
+    with _connect() as conn:
+        now = _now_iso()
+        conn.execute(
+            """INSERT INTO guild_memory (guild_id, memory_key, memory_value, context, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(guild_id, memory_key, context) DO UPDATE SET
+                 memory_value = excluded.memory_value,
+                 updated_at = excluded.updated_at""",
+            (guild_id, memory_key, memory_value, context, now, now),
+        )
+
+
+def get_guild_memory(guild_id: int, memory_key: str, context: str = "") -> str | None:
+    """Retrieve a specific server memory."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT memory_value FROM guild_memory WHERE guild_id = ? AND memory_key = ? AND context = ?",
+            (guild_id, memory_key, context),
+        ).fetchone()
+        return row["memory_value"] if row else None
+
+
+def get_all_guild_memories(guild_id: int, limit: int = 20) -> list[sqlite3.Row]:
+    """Get recent server memories, capped for prompt efficiency."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT * FROM guild_memory WHERE guild_id = ? ORDER BY updated_at DESC LIMIT ?",
+            (guild_id, limit),
+        ).fetchall()
+
+
+def delete_guild_memory(guild_id: int, memory_key: str, context: str = "") -> bool:
+    """Delete a specific server memory. Returns True if something was deleted."""
+    with _connect() as conn:
+        cursor = conn.execute(
+            "DELETE FROM guild_memory WHERE guild_id = ? AND memory_key = ? AND context = ?",
+            (guild_id, memory_key, context),
+        )
+        return cursor.rowcount > 0
+
+
+def clear_all_guild_memories(guild_id: int) -> int:
+    """Remove all server memories for a guild."""
+    with _connect() as conn:
+        cursor = conn.execute("DELETE FROM guild_memory WHERE guild_id = ?", (guild_id,))
+        return cursor.rowcount
+
+
 def get_all_user_memories(user_id: int, limit: int = 20) -> list[sqlite3.Row]:
     """Get recent memories for a user (limited to save tokens).
 
@@ -656,6 +722,13 @@ def delete_user_memory(user_id: int, memory_key: str, context: str = "") -> bool
             (user_id, memory_key, context),
         )
         return cursor.rowcount > 0
+
+
+def clear_all_user_memories(user_id: int) -> int:
+    """Remove all personal memories for a user."""
+    with _connect() as conn:
+        cursor = conn.execute("DELETE FROM user_memory WHERE user_id = ?", (user_id,))
+        return cursor.rowcount
 
 
 def build_user_context(user_id: int, mentioned_user_ids: list[int] | None = None) -> str:
@@ -700,6 +773,22 @@ def build_user_context(user_id: int, mentioned_user_ids: list[int] | None = None
 
     # Hard limit to 20 items to keep token usage reasonable
     return "User context:\n" + "\n".join(f"- {m}" for m in memories[:20])
+
+
+def build_guild_context(guild_id: int) -> str:
+    """Build a compact context string from server-wide memories."""
+    memories = []
+    for mem in get_all_guild_memories(guild_id, limit=20):
+        if mem["memory_key"] == "language_preference":
+            memories.append(f"Speak in {mem['memory_value']} for this server")
+        elif mem["memory_key"] == "server_topic_memory":
+            memories.append(f"Remember past conversations and topics: {mem['memory_value']}")
+        elif mem["memory_key"] == "custom_note":
+            memories.append(mem["memory_value"])
+
+    if not memories:
+        return ""
+    return "Server context:\n" + "\n".join(f"- {m}" for m in memories[:10])
 
 
 # ---------------------------------------------------------------------------

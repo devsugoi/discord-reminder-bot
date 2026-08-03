@@ -1412,6 +1412,64 @@ async def handle_memory_command(message: discord.Message, text: str) -> bool:
             )
             return True
 
+    show_patterns = [
+        r"(?:show|list|what do you remember|what do you know)\s+(?:the\s+)?(?:server|guild|this\s+server)\s+memory",
+        r"(?:show|list|what do you remember|what do you know)\s+(?:my\s+)?memory",
+    ]
+
+    for pattern in show_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            if "server" in text.lower() or "guild" in text.lower() or "this server" in text.lower():
+                if message.guild is None:
+                    await say(message, "I don't have server memory here because this isn't a server message.")
+                    return True
+                memories = db.get_all_guild_memories(message.guild.id, limit=10)
+                if not memories:
+                    await say(message, "I don't have any saved memory for this server yet.")
+                else:
+                    lines = ["Here’s what I remember for this server:"]
+                    for mem in memories:
+                        lines.append(f"- {mem['memory_value']}")
+                    await say(message, "\n".join(lines))
+                return True
+
+            memories = db.get_all_user_memories(message.author.id, limit=10)
+            if not memories:
+                await say(message, "I don't have any personal memory for you yet.")
+            else:
+                lines = ["Here’s what I remember about you:"]
+                for mem in memories:
+                    lines.append(f"- {mem['memory_value']}")
+                await say(message, "\n".join(lines))
+            return True
+
+    clear_patterns = [
+        r"(?:clear|forget|erase|reset)\s+(?:all\s+)?(?:the\s+)?(?:server|guild|this\s+server)\s+memory",
+        r"(?:clear|forget|erase|reset)\s+(?:all\s+)?(?:my\s+)?memory",
+    ]
+
+    for pattern in clear_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            if "server" in text.lower() or "guild" in text.lower() or "this server" in text.lower():
+                if message.guild is None:
+                    await say(message, "I don't have server memory here because this isn't a server message.")
+                    return True
+                count = db.clear_all_guild_memories(message.guild.id)
+                if count:
+                    await say(message, "✓ Cleared the server memory I had for this server.")
+                else:
+                    await say(message, "There wasn't any server memory to clear.")
+                return True
+
+            count = db.clear_all_user_memories(message.author.id)
+            if count:
+                await say(message, "✓ Cleared your personal memory.")
+            else:
+                await say(message, "There wasn't any personal memory to clear.")
+            return True
+
     return False
 
 
@@ -1514,6 +1572,7 @@ async def handle_chat_mention(message: discord.Message) -> None:
             user_id=message.author.id,
             mentioned_user_ids=mentioned_user_ids,
             image_datas=image_datas or None,
+            guild_id=message.guild.id if message.guild else None,
         )
     if error_kind == "quota":
         await bot.notify_owner_once_today(
@@ -1581,6 +1640,7 @@ async def handle_chat_mention(message: discord.Message) -> None:
             user_message=question or "",
             bot_reply=reply,
             author_name=message.author.display_name,
+            guild_id=message.guild.id if message.guild else None,
         )
         if saved:
             logger.debug("Saved conversation memory for user %s", message.author.id)
