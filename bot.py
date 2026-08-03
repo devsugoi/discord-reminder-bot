@@ -420,20 +420,6 @@ def parse_due_datetime(raw_value: str | None) -> datetime | None:
         "%m/%d/%Y",               # "12/24/2050"
     ]
 
-    for fmt in fallback_formats:
-        try:
-            parsed = datetime.strptime(raw_value, fmt)
-            logger.debug(
-                "Parsed date '%s' using fallback format '%s' (AI should output YYYY-MM-DD)",
-                raw_value, fmt
-            )
-            # Date-only formats need the default hour
-            if parsed.hour == 0 and parsed.minute == 0 and "%H" not in fmt and "%I" not in fmt:
-                parsed = parsed.replace(hour=DEFAULT_REMINDER_HOUR)
-            return parsed
-        except ValueError:
-            pass
-
     logger.warning("Could not parse reminder date: %r", raw_value)
     return None
 
