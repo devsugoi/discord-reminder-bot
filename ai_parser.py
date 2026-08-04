@@ -630,7 +630,6 @@ def build_chat_payload(
     bot_name: str,
     context_lines: list[str],
     search_results: str | None = None,
-    user_context: str | None = None,
     image_count: int = 0,
 ) -> str:
     """Assemble the input for one conversational reply."""
@@ -639,8 +638,6 @@ def build_chat_payload(
         f"Today: {now.strftime('%Y-%m-%d')} ({now.strftime('%A')}), local time {now.strftime('%H:%M')}",
         f"Your name in this server: {bot_name}",
     ]
-    if user_context:
-        parts.append(user_context)
     if context_lines:
         parts.append("Recent conversation (oldest first, for context):")
         parts.extend(f"  {line}" for line in context_lines)
@@ -663,6 +660,22 @@ def build_chat_payload(
     return "\n".join(parts)
 
 
+def build_chat_system_prompt(base_prompt: str, guild_id: int | None = None) -> str:
+    """Append compact server context to the chatbot system instruction."""
+    if guild_id is None:
+        return base_prompt
+    import db
+
+    context_data = db.get_server_context(guild_id)
+    if not context_data.strip():
+        return base_prompt
+    return (
+        f"{base_prompt}\n\n"
+        "SERVER CONTEXT (standing rules and known facts for this Discord server — follow these):\n"
+        f"{context_data}"
+    )
+
+
 async def chat_reply(
     message_text: str,
     author_name: str,
@@ -682,45 +695,6 @@ async def chat_reply(
       - (None, "busy")  when Gemini stayed overloaded through every retry
       - (None, "error") on any other failure (already logged)
     """
-    # Build user-specific context from memory - but only if the message suggests it's needed
-    user_context = None
-    if user_id:
-        import db
-        import smart_memory
-
-        # Hybrid approach: Try pattern check first, then ask AI
-        should_load = smart_memory.should_load_memory(message_text)
-
-        if should_load:
-            # Pattern detected need for memory
-            user_context = db.build_user_context(user_id, mentioned_user_ids)
-            if user_context:
-                logger.debug("Loaded user memory context (pattern matched)")
-        else:
-            # Pattern didn't match - ask AI if memory would help
-            # This is a lightweight check (~50 tokens)
-            needs_memory = await smart_memory.ai_should_load_memory(message_text)
-            if needs_memory:
-                user_context = db.build_user_context(user_id, mentioned_user_ids)
-                if user_context:
-                    logger.debug("Loaded user memory context (AI decided)")
-
-        # Always load nickname preferences if users are mentioned
-        if not user_context and mentioned_user_ids:
-            user_context = db.build_user_context(user_id, mentioned_user_ids)
-            if user_context:
-                logger.debug("Loaded user memory context (mentioned users)")
-
-    if guild_id:
-        import db
-        guild_context = db.build_guild_context(guild_id)
-        if guild_context:
-            if user_context:
-                user_context = f"{user_context}\n\n{guild_context}"
-            else:
-                user_context = guild_context
-            logger.debug("Loaded guild memory context")
-
     image_count = len(image_datas) if image_datas else 0
     payload = build_chat_payload(
         message_text=message_text,
@@ -728,7 +702,6 @@ async def chat_reply(
         bot_name=bot_name,
         context_lines=context_lines,
         search_results=search_results,
-        user_context=user_context,
         image_count=image_count,
     )
 
@@ -740,11 +713,13 @@ async def chat_reply(
             contents_parts.append(
                 genai_types.Part.from_bytes(data=img_bytes, mime_type=mime_type)
             )
-        system_prompt = IMAGE_VISION_SYSTEM_PROMPT
+        base_system_prompt = IMAGE_VISION_SYSTEM_PROMPT
         contents: str | list[genai_types.Part] = contents_parts
     else:
         contents = payload
-        system_prompt = CHATBOT_SYSTEM_PROMPT
+        base_system_prompt = CHATBOT_SYSTEM_PROMPT
+
+    system_prompt = build_chat_system_prompt(base_system_prompt, guild_id)
 
     response, error_kind = await _generate_with_retry(
         keys=chat_keys(),

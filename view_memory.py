@@ -1,12 +1,12 @@
-"""View all saved user memories from the database."""
+"""View saved server context documents from the database."""
 
-import sqlite3
 import os
+import sqlite3
 from datetime import datetime
 
 
-def view_all_memories():
-    """Display all user memories in a readable format."""
+def view_all_contexts() -> None:
+    """Display all server context documents in a readable format."""
     db_path = os.path.join(os.path.dirname(__file__), "debts.db")
 
     if not os.path.exists(db_path):
@@ -17,59 +17,49 @@ def view_all_memories():
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
-    # Check if table exists
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_memory'")
+    cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='server_context'"
+    )
     if not cursor.fetchone():
-        print("user_memory table doesn't exist yet.")
+        print("server_context table doesn't exist yet.")
         print("The bot needs to run at least once to create the table.")
         conn.close()
         return
 
-    # Fetch all memories
-    cursor.execute("""
-        SELECT user_id, memory_key, memory_value, context, created_at, updated_at
-        FROM user_memory
-        ORDER BY user_id, updated_at DESC
-    """)
-
-    memories = cursor.fetchall()
+    cursor.execute(
+        """
+        SELECT guild_id, context_data, updated_at
+        FROM server_context
+        WHERE context_data != ''
+        ORDER BY guild_id
+        """
+    )
+    rows = cursor.fetchall()
     conn.close()
 
-    if not memories:
-        print("No memories saved yet.")
-        print("\nTry chatting with the bot and saying things like:")
-        print("  - 'I'm a software engineer'")
-        print("  - 'tandaan mo portfolio ko https://example.com'")
-        print("  - 'remember my github https://github.com/username'")
+    if not rows:
+        print("No server context saved yet.")
+        print("\nTry telling the bot server-wide rules in chat, e.g.:")
+        print("  - 'Everyone speak English in this server'")
+        print("  - '@bot remember for this server to keep replies short'")
         return
 
     print("=" * 70)
-    print(f"Found {len(memories)} memory entries")
+    print(f"Found {len(rows)} server context document(s)")
     print("=" * 70)
 
-    current_user = None
-    for mem in memories:
-        if current_user != mem['user_id']:
-            current_user = mem['user_id']
-            print(f"\n📌 User ID: {mem['user_id']}")
-            print("-" * 70)
-
-        print(f"\n  Type: {mem['memory_key']}")
-        print(f"  Value: {mem['memory_value']}")
-        if mem['context']:
-            print(f"  Context: {mem['context']}")
-
-        created = datetime.fromisoformat(mem['created_at'])
-        updated = datetime.fromisoformat(mem['updated_at'])
-        print(f"  Created: {created.strftime('%Y-%m-%d %H:%M:%S')}")
-        if created != updated:
-            print(f"  Updated: {updated.strftime('%Y-%m-%d %H:%M:%S')}")
+    for row in rows:
+        print(f"\nGuild ID: {row['guild_id']}")
+        print("-" * 70)
+        print(row["context_data"])
+        updated = datetime.fromisoformat(row["updated_at"])
+        print(f"\nUpdated: {updated.strftime('%Y-%m-%d %H:%M:%S')}")
 
     print("\n" + "=" * 70)
 
 
-def view_user_memory(user_id: int):
-    """Display memories for a specific user."""
+def view_guild_context(guild_id: int) -> None:
+    """Display server context for a specific guild."""
     db_path = os.path.join(os.path.dirname(__file__), "debts.db")
 
     if not os.path.exists(db_path):
@@ -80,37 +70,24 @@ def view_user_memory(user_id: int):
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
-    cursor.execute("""
-        SELECT memory_key, memory_value, context, created_at, updated_at
-        FROM user_memory
-        WHERE user_id = ?
-        ORDER BY updated_at DESC
-    """, (user_id,))
-
-    memories = cursor.fetchall()
+    cursor.execute(
+        "SELECT context_data, updated_at FROM server_context WHERE guild_id = ?",
+        (guild_id,),
+    )
+    row = cursor.fetchone()
     conn.close()
 
-    if not memories:
-        print(f"No memories found for user ID: {user_id}")
+    if not row or not row["context_data"].strip():
+        print(f"No server context found for guild ID: {guild_id}")
         return
 
     print("=" * 70)
-    print(f"Memories for User ID: {user_id}")
+    print(f"Server context for guild ID: {guild_id}")
     print("=" * 70)
-
-    for mem in memories:
-        print(f"\n  Type: {mem['memory_key']}")
-        print(f"  Value: {mem['memory_value']}")
-        if mem['context']:
-            print(f"  Context: {mem['context']}")
-
-        created = datetime.fromisoformat(mem['created_at'])
-        updated = datetime.fromisoformat(mem['updated_at'])
-        print(f"  Created: {created.strftime('%Y-%m-%d %H:%M:%S')}")
-        if created != updated:
-            print(f"  Updated: {updated.strftime('%Y-%m-%d %H:%M:%S')}")
-
-    print("\n" + "=" * 70)
+    print(row["context_data"])
+    updated = datetime.fromisoformat(row["updated_at"])
+    print(f"\nUpdated: {updated.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 70)
 
 
 if __name__ == "__main__":
@@ -118,10 +95,10 @@ if __name__ == "__main__":
 
     if len(sys.argv) > 1:
         try:
-            user_id = int(sys.argv[1])
-            view_user_memory(user_id)
+            gid = int(sys.argv[1])
+            view_guild_context(gid)
         except ValueError:
-            print("Usage: python view_memory.py [user_id]")
-            print("  user_id must be a number")
+            print("Usage: python view_memory.py [guild_id]")
+            print("  guild_id must be a number")
     else:
-        view_all_memories()
+        view_all_contexts()

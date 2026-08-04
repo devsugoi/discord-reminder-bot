@@ -39,7 +39,7 @@ Runs 24/7 on a Raspberry Pi Zero 2 W (even underclocked to one core) at
 1. [How it works](#how-it-works)
 2. [Examples it understands](#examples-it-understands)
 3. [Commands](#commands)
-4. [User Memory System](#user-memory-system)
+4. [Server Context Memory](#server-context-memory)
 5. [Settings reference](#settings-reference)
 6. [Setup guide](#setup-guide)
 7. [Running on the Raspberry Pi](#running-on-the-raspberry-pi)
@@ -174,86 +174,49 @@ sees them) — except `/calendar`, `/help`, and `/raffle` commands, which any me
 
 ---
 
-## User Memory System
+## Server Context Memory
 
-The bot remembers user preferences and personal context across conversations using a **hybrid approach** that combines pattern matching (fast, zero tokens) with AI evaluation (smart, minimal tokens).
+The bot keeps one **compact standing-context document per Discord server**. It captures durable rules and facts (language, tone, nicknames, portfolios) and injects them into the chatbot **system prompt** on every reply — so the model always sees server rules without hunting through chat history.
 
 ### What It Remembers
 
-The memory system now supports two scopes:
-- **Personal memory** for one user’s preferences, nicknames, and personal context.
-- **Server memory** for shared behavior rules and topic context that should apply to the whole server.
+Everything lives in a single bullet-list string per guild (max ~1500 characters), for example:
 
-**Nicknames (instant, zero tokens):**
-- `@bot call @Doc as DOY`
-- `@bot gusto ko tawag mo kay @Doc lagi ay DOY`
-- `@bot forget about calling @Doc`
-
-**Personal info (automatic, hybrid):**
-- Portfolio links: `@bot tandaan mo portfolio ko https://devsugoi.github.io/`
-- Work/role: Detects when you mention "I'm a software engineer" or "data scientist ako"
-- Preferences: "I prefer Tagalog", "gusto ko Python"
-- Any explicit "remember this" or "tandaan mo" requests
+- Server-wide language: "Everyone speak English in this server"
+- Standing nicknames: "Call @Doc as DOY"
+- Durable user facts shared in chat: portfolio links, roles, preferences
+- Explicit "remember for this server" instructions
 
 ### How It Works
 
-**Pattern matching (0 tokens):**
-Most common cases are caught instantly by patterns—portfolio links with "tandaan mo", work mentions like "I'm a...", nicknames, etc.
-
-**AI backup (~50-150 tokens):**
-When patterns don't match, the AI evaluates whether the conversation contains information worth remembering or if a question needs memory context to answer properly.
+1. **Always loaded:** Server context is appended to the system prompt whenever the bot replies in a guild.
+2. **Self-summarizing updates:** After each chat reply, if the exchange looks like a standing rule, the bot asks Gemini to rewrite the entire context document compactly (merge, dedupe, drop casual chat).
+3. **Migration:** Existing per-user and guild key-value memories are folded into `server_context` on first startup — nothing is discarded.
 
 ### Examples
 
 ```
-User: @bot tandaan mo portfolio ko https://devsugoi.github.io/
-Bot: Noted!
-[Saved instantly, 0 tokens]
+User: @bot from now on everyone speak English in this server
+Bot: Sige, English na tayo dito!
+[Context updated via LLM rewrite]
 
-Later:
-User: @bot anong portfolio ko?
-[Loads memory, 0 tokens (pattern matched)]
-Bot: Your portfolio is https://devsugoi.github.io/
-
----
-
-User: @bot I work as a data scientist
-Bot: Nice to meet you!
-[Saved automatically, 0 tokens (pattern matched)]
-
-Later:
-User: @bot what do I do for work?
-[AI checks if memory needed: ~50 tokens]
-Bot: You work as a data scientist!
+Later (any user, any message):
+[System prompt includes: "- Speak in English for this server"]
 ```
 
 ### Memory Commands
 
-You can also control the memory directly in chat:
+- `@bot show server memory` / `@bot show server context` → shows the current standing context
+- `@bot clear server memory` / `@bot clear server context` → wipes it for that server
 
-- `@bot show server memory` → shows the compact server-wide memories the bot has saved.
-- `@bot clear server memory` → clears the server-wide memories for that server.
-- `@bot show my memory` → shows your personal memories.
-- `@bot clear my memory` → clears your personal memories.
-
-These commands are intentionally simple so the bot can be transparent about what it remembers and easy to reset.
-
-### Token Usage
-
-- **85% of conversations**: 0 tokens (casual chat + pattern matches)
-- **15% of conversations**: AI backup (~50-150 tokens per evaluation)
-- **Daily estimate**: ~2,750 tokens (well within Gemini free tier)
+Standing rules can also be set naturally in chat — no special command syntax required.
 
 ### Technical Details
 
-- **Hybrid intelligence:** Patterns catch common cases (0 tokens), AI catches creative phrasings
-- **Persistent:** Memories survive bot restarts
-- **User-specific:** Each user's memories are isolated
-- **Smart loading:** Only loads when the conversation needs it
-- **Smart saving:** Only saves truly valuable information
-- **View memories:** `python view_memory.py` (on the Pi)
-
-Memories are stored in the `user_memory` table in SQLite. The system automatically extracts meaningful context from conversations without requiring explicit commands (though explicit "tandaan mo" or "remember" commands work too).
+- **Storage:** `server_context` table in SQLite (`guild_id`, `context_data`, `updated_at`)
+- **Prompt injection:** `build_chat_system_prompt()` in `ai_parser.py`
+- **Updates:** `smart_memory.maybe_update_server_context()` after each chat reply
+- **Inspect:** `python view_memory.py [guild_id]` on the Pi
 
 ---
 
@@ -578,9 +541,10 @@ reminderbot.service   systemd unit for the Pi
   reminders themselves are safe in SQLite; just re-add via command if one gets lost.
 - **Detection is per-conversation, not psychic.** Sarcasm and vague banter are
   filtered by the confidence threshold, and you're the final filter via the buttons.
-- **Chat has a short memory.** A reply only sees the last `CONTEXT_MESSAGES`
-  messages in that channel — there's no long-term memory of past conversations,
-  and it can't read the debt ledger or reminder list.
+- **Chat has short channel history plus server context.** A reply sees the last
+  `CONTEXT_MESSAGES` messages in that channel and the compact standing-context
+  document for that server (language, nicknames, durable facts). It still can't
+  read the debt ledger or reminder list.
 - **Recurring Discord events** sync as their next occurrence only — the repeat
   rule isn't copied to Google Calendar.
 - **One linked calendar per Discord user** (re-linking replaces it), and everyone

@@ -1331,129 +1331,42 @@ async def create_requested_reminder(
 
 
 async def handle_memory_command(message: discord.Message, text: str) -> bool:
-    """Process memory-related commands like nickname changes.
+    """Process server context commands (show / clear).
 
     Returns True if this was a memory command (fully handled).
     """
-    # Pattern: "call @user as NAME" or "tawag kay @user ay NAME"
-    # Supports both English and Tagalog variations
-    patterns = [
-        r"(?:call|tawag\s+(?:mo\s+)?(?:kay|sa))\s+<@!?(\d+)>\s+(?:as|ay|is|ng|na)\s+['\"]?(\w+)['\"]?",
-        r"(?:gusto\s+ko|i\s+want|sana)\s+(?:tawag|call)\s+(?:mo\s+)?(?:kay|sa|mo\s+si)?\s*<@!?(\d+)>\s+(?:ay|as|is|ng|na)\s+['\"]?(\w+)['\"]?",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            target_user_id = int(match.group(1))
-            nickname = match.group(2).strip().strip('"\'').upper()
-
-            # Save the memory
-            db.save_user_memory(
-                user_id=message.author.id,
-                memory_key="nickname_preference",
-                memory_value=nickname,
-                context=str(target_user_id)
-            )
-
-            try:
-                target_user = await bot.fetch_user(target_user_id)
-                await say(message,
-                    f"✓ Noted! I'll call {target_user.mention} as **{nickname}** from now on.")
-            except:
-                await say(message,
-                    f"✓ Noted! I'll call that person as **{nickname}** from now on.")
-
-            logger.info(
-                "Memory saved: user %s wants %s called '%s'",
-                message.author.id, target_user_id, nickname
-            )
-            return True
-
-    # Pattern: "forget about calling @user as NAME" or similar
-    forget_patterns = [
-        r"forget\s+(?:about\s+)?(?:calling|tawag)\s+(?:kay\s+)?<@!?(\d+)>",
-        r"kalimutan\s+(?:mo\s+)?(?:yung\s+)?(?:tawag|pangalan)\s+(?:kay\s+)?<@!?(\d+)>",
-        r"(?:stop|huwag\s+na)\s+(?:calling|tawag)\s+(?:kay\s+)?<@!?(\d+)>",
-    ]
-
-    for pattern in forget_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            target_user_id = int(match.group(1))
-            deleted = db.delete_user_memory(
-                message.author.id,
-                "nickname_preference",
-                str(target_user_id)
-            )
-
-            if deleted:
-                await say(message, "✓ Forgotten! I'll use their regular name now.")
-            else:
-                await say(message, "I don't have any special name saved for that person.")
-
-            logger.info(
-                "Memory deleted: user %s removed nickname for %s",
-                message.author.id, target_user_id
-            )
-            return True
-
     show_patterns = [
-        r"(?:show|list|what do you remember|what do you know)\s+(?:the\s+)?(?:server|guild|this\s+server)\s+memory",
-        r"(?:show|list|what do you remember|what do you know)\s+(?:my\s+)?memory",
+        r"(?:show|list|what do you remember|what do you know)\s+(?:the\s+)?(?:server|guild|this\s+server)\s+(?:memory|context)",
     ]
 
     for pattern in show_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            if "server" in text.lower() or "guild" in text.lower() or "this server" in text.lower():
-                if message.guild is None:
-                    await say(message, "I don't have server memory here because this isn't a server message.")
-                    return True
-                memories = db.get_all_guild_memories(message.guild.id, limit=10)
-                if not memories:
-                    await say(message, "I don't have any saved memory for this server yet.")
-                else:
-                    lines = ["Here’s what I remember for this server:"]
-                    for mem in memories:
-                        lines.append(f"- {mem['memory_value']}")
-                    await say(message, "\n".join(lines))
+        if re.search(pattern, text, re.IGNORECASE):
+            if message.guild is None:
+                await say(message, "I don't have server memory here because this isn't a server message.")
                 return True
-
-            memories = db.get_all_user_memories(message.author.id, limit=10)
-            if not memories:
-                await say(message, "I don't have any personal memory for you yet.")
+            context_data = db.get_server_context(message.guild.id)
+            if not context_data.strip():
+                await say(message, "I don't have any saved context for this server yet.")
             else:
-                lines = ["Here’s what I remember about you:"]
-                for mem in memories:
-                    lines.append(f"- {mem['memory_value']}")
-                await say(message, "\n".join(lines))
+                await say(
+                    message,
+                    "Here's the standing context I have for this server:\n" + context_data,
+                )
             return True
 
     clear_patterns = [
-        r"(?:clear|forget|erase|reset)\s+(?:all\s+)?(?:the\s+)?(?:server|guild|this\s+server)\s+memory",
-        r"(?:clear|forget|erase|reset)\s+(?:all\s+)?(?:my\s+)?memory",
+        r"(?:clear|forget|erase|reset)\s+(?:all\s+)?(?:the\s+)?(?:server|guild|this\s+server)\s+(?:memory|context)",
     ]
 
     for pattern in clear_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            if "server" in text.lower() or "guild" in text.lower() or "this server" in text.lower():
-                if message.guild is None:
-                    await say(message, "I don't have server memory here because this isn't a server message.")
-                    return True
-                count = db.clear_all_guild_memories(message.guild.id)
-                if count:
-                    await say(message, "✓ Cleared the server memory I had for this server.")
-                else:
-                    await say(message, "There wasn't any server memory to clear.")
+        if re.search(pattern, text, re.IGNORECASE):
+            if message.guild is None:
+                await say(message, "I don't have server memory here because this isn't a server message.")
                 return True
-
-            count = db.clear_all_user_memories(message.author.id)
-            if count:
-                await say(message, "✓ Cleared your personal memory.")
+            if db.clear_server_context(message.guild.id):
+                await say(message, "✓ Cleared the server context I had for this server.")
             else:
-                await say(message, "There wasn't any personal memory to clear.")
+                await say(message, "There wasn't any server context to clear.")
             return True
 
     return False
@@ -1618,20 +1531,19 @@ async def handle_chat_mention(message: discord.Message) -> None:
     logger.info("Chat reply to %s in channel %s", message.author.name, message.channel.id)
     await say(message, reply, allowed_mentions=allowed_mentions)
 
-    # Smart memory: save important information from this conversation
-    # This happens in the background and doesn't affect the user experience
+    # Update compact server context when the exchange may contain standing rules
     try:
-        saved = await smart_memory.save_conversation_memory(
-            user_id=message.author.id,
-            user_message=question or "",
-            bot_reply=reply,
-            author_name=message.author.display_name,
-            guild_id=message.guild.id if message.guild else None,
-        )
-        if saved:
-            logger.debug("Saved conversation memory for user %s", message.author.id)
+        if message.guild:
+            updated = await smart_memory.maybe_update_server_context(
+                guild_id=message.guild.id,
+                user_message=question or "",
+                bot_reply=reply,
+                author_name=message.author.display_name,
+            )
+            if updated:
+                logger.debug("Updated server context for guild %s", message.guild.id)
     except Exception:
-        logger.exception("Failed to save conversation memory (non-critical)")
+        logger.exception("Failed to update server context (non-critical)")
 
     # Safety net: if the chat AI claims it set a reminder but the detection path
     # didn't catch it (prescan missed it, low confidence, etc.), try to actually

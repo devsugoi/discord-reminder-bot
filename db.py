@@ -119,11 +119,20 @@ def init() -> None:
             )"""
         )
         conn.execute(
+            """CREATE TABLE IF NOT EXISTS server_context (
+                guild_id INTEGER PRIMARY KEY,
+                context_data TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            )"""
+        )
+        # Legacy tables may exist on older databases; migration folds them into
+        # server_context and drops them (see _migrate_legacy_memory).
+        conn.execute(
             """CREATE TABLE IF NOT EXISTS user_memory (
                 user_id INTEGER NOT NULL,
                 memory_key TEXT NOT NULL,
                 memory_value TEXT NOT NULL,
-                context TEXT NOT NULL DEFAULT '',  -- optional: what this applies to (e.g., target user_id for nicknames)
+                context TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (user_id, memory_key, context)
@@ -134,7 +143,7 @@ def init() -> None:
                 guild_id INTEGER NOT NULL,
                 memory_key TEXT NOT NULL,
                 memory_value TEXT NOT NULL,
-                context TEXT NOT NULL DEFAULT '',  -- optional: what this applies to (e.g., a channel or topic)
+                context TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (guild_id, memory_key, context)
@@ -190,6 +199,7 @@ def init() -> None:
                 PRIMARY KEY (user_id, guild_id)
             )"""
         )
+        _migrate_legacy_memory(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -608,187 +618,238 @@ def all_event_syncs() -> list[sqlite3.Row]:
 
 
 # ---------------------------------------------------------------------------
-# User Memory (context, preferences, nicknames)
+# Server context (compact standing rules / facts per Discord guild)
 # ---------------------------------------------------------------------------
 
-def save_user_memory(
-    user_id: int,
-    memory_key: str,
-    memory_value: str,
-    context: str = ""
-) -> None:
-    """Store or update a user-specific memory.
+SERVER_CONTEXT_MAX_CHARS = 1500
+_MIGRATION_FLAG = "memory_migrated_to_server_context"
 
-    Args:
-        user_id: Discord user ID who owns this memory
-        memory_key: Type of memory (e.g., "nickname_preference", "language_preference")
-        memory_value: The actual value (e.g., "DOY", "Tagalog")
-        context: Optional context (e.g., target user_id for nicknames)
-    """
-    with _connect() as conn:
-        now = _now_iso()
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def _format_guild_memory_row(row: sqlite3.Row) -> str:
+    key = row["memory_key"]
+    value = row["memory_value"]
+    if key == "language_preference":
+        return f"Speak in {value} for this server"
+    if key == "server_topic_memory":
+        return f"Remember past conversations and topics: {value}"
+    if key == "custom_note":
+        return value
+    return f"{key.replace('_', ' ')}: {value}"
+
+
+def _format_user_memory_row(row: sqlite3.Row) -> str:
+    user_id = row["user_id"]
+    key = row["memory_key"]
+    value = row["memory_value"]
+    ctx = row["context"] or ""
+    if key == "nickname_preference" and ctx:
+        return f"Call <@{ctx}> as '{value}' (set by <@{user_id}>)"
+    if key == "portfolio_link":
+        return f"User <@{user_id}> portfolio: {value}"
+    if key == "github_link":
+        return f"User <@{user_id}> GitHub: {value}"
+    if key == "linkedin_link":
+        return f"User <@{user_id}> LinkedIn: {value}"
+    if key == "work_link":
+        return f"User <@{user_id}> work link: {value}"
+    if key == "work_role":
+        return f"User <@{user_id}> works as: {value}"
+    if key == "user_preference":
+        return f"User <@{user_id}> prefers: {value}"
+    if key == "language_preference":
+        return f"User <@{user_id}> prefers {value} language"
+    if key == "formality_level":
+        return f"Use {value} tone with user <@{user_id}>"
+    if key == "custom_note":
+        return f"User <@{user_id}>: {value}"
+    return f"User <@{user_id}> {key.replace('_', ' ')}: {value}"
+
+
+def trim_context_to_limit(text: str, limit: int = SERVER_CONTEXT_MAX_CHARS) -> str:
+    """Trim context to a hard character limit, preferring complete bullet lines."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    lines = text.splitlines()
+    kept: list[str] = []
+    length = 0
+    for line in lines:
+        extra = len(line) + (1 if kept else 0)
+        if length + extra > limit:
+            break
+        kept.append(line)
+        length += extra
+    if kept:
+        return "\n".join(kept).strip()
+    return text[:limit].strip()
+
+
+def _merge_context_bullets(*sections: list[str]) -> str:
+    """Merge bullet sections, dedupe while preserving order."""
+    seen: set[str] = set()
+    merged: list[str] = []
+    for section in sections:
+        for line in section:
+            normalized = line.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            merged.append(normalized)
+    if not merged:
+        return ""
+    return "\n".join(f"- {line.lstrip('- ').strip()}" for line in merged)
+
+
+def _discover_migration_guild_ids(conn: sqlite3.Connection) -> set[int]:
+    guild_ids: set[int] = set()
+    if _table_exists(conn, "guild_memory"):
+        for row in conn.execute("SELECT DISTINCT guild_id FROM guild_memory"):
+            guild_ids.add(int(row[0]))
+    if _table_exists(conn, "raffles"):
+        for row in conn.execute("SELECT DISTINCT guild_id FROM raffles WHERE guild_id IS NOT NULL"):
+            guild_ids.add(int(row[0]))
+    if _table_exists(conn, "event_sync"):
+        for row in conn.execute("SELECT DISTINCT guild_id FROM event_sync"):
+            guild_ids.add(int(row[0]))
+    env_guild = os.getenv("GUILD_ID", "").strip()
+    if env_guild.isdigit():
+        guild_ids.add(int(env_guild))
+    return guild_ids
+
+
+def _migrate_legacy_memory(conn: sqlite3.Connection) -> None:
+    """Fold user_memory and guild_memory into server_context, then drop legacy tables."""
+    row = conn.execute(
+        "SELECT value FROM settings WHERE key = ?", (_MIGRATION_FLAG,)
+    ).fetchone()
+    if row and row[0] == "1":
+        if _table_exists(conn, "user_memory"):
+            conn.execute("DROP TABLE user_memory")
+        if _table_exists(conn, "guild_memory"):
+            conn.execute("DROP TABLE guild_memory")
+        return
+
+    has_user = _table_exists(conn, "user_memory")
+    has_guild = _table_exists(conn, "guild_memory")
+    if not has_user and not has_guild:
         conn.execute(
-            """INSERT INTO user_memory (user_id, memory_key, memory_value, context, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(user_id, memory_key, context) DO UPDATE SET
-                 memory_value = excluded.memory_value,
-                 updated_at = excluded.updated_at""",
-            (user_id, memory_key, memory_value, context, now, now),
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (_MIGRATION_FLAG, "1"),
         )
+        return
 
-
-def get_user_memory(user_id: int, memory_key: str, context: str = "") -> str | None:
-    """Retrieve a specific memory for a user."""
-    with _connect() as conn:
-        row = conn.execute(
-            "SELECT memory_value FROM user_memory WHERE user_id = ? AND memory_key = ? AND context = ?",
-            (user_id, memory_key, context),
-        ).fetchone()
-        return row["memory_value"] if row else None
-
-
-def save_guild_memory(
-    guild_id: int,
-    memory_key: str,
-    memory_value: str,
-    context: str = ""
-) -> None:
-    """Store or update a server-wide memory."""
-    with _connect() as conn:
-        now = _now_iso()
-        conn.execute(
-            """INSERT INTO guild_memory (guild_id, memory_key, memory_value, context, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(guild_id, memory_key, context) DO UPDATE SET
-                 memory_value = excluded.memory_value,
-                 updated_at = excluded.updated_at""",
-            (guild_id, memory_key, memory_value, context, now, now),
-        )
-
-
-def get_guild_memory(guild_id: int, memory_key: str, context: str = "") -> str | None:
-    """Retrieve a specific server memory."""
-    with _connect() as conn:
-        row = conn.execute(
-            "SELECT memory_value FROM guild_memory WHERE guild_id = ? AND memory_key = ? AND context = ?",
-            (guild_id, memory_key, context),
-        ).fetchone()
-        return row["memory_value"] if row else None
-
-
-def get_all_guild_memories(guild_id: int, limit: int = 20) -> list[sqlite3.Row]:
-    """Get recent server memories, capped for prompt efficiency."""
-    with _connect() as conn:
-        return conn.execute(
-            "SELECT * FROM guild_memory WHERE guild_id = ? ORDER BY updated_at DESC LIMIT ?",
-            (guild_id, limit),
+    guild_ids = _discover_migration_guild_ids(conn)
+    user_rows: list[sqlite3.Row] = []
+    if has_user:
+        user_rows = conn.execute(
+            "SELECT * FROM user_memory ORDER BY updated_at DESC"
         ).fetchall()
+    user_bullets = [_format_user_memory_row(r) for r in user_rows]
+
+    if not guild_ids and user_bullets:
+        # No guild discovered but user data exists — use env GUILD_ID or a placeholder.
+        env_guild = os.getenv("GUILD_ID", "").strip()
+        if env_guild.isdigit():
+            guild_ids.add(int(env_guild))
+        else:
+            guild_ids.add(0)
+
+    for guild_id in guild_ids:
+        guild_bullets: list[str] = []
+        if has_guild:
+            for row in conn.execute(
+                "SELECT * FROM guild_memory WHERE guild_id = ? ORDER BY updated_at DESC",
+                (guild_id,),
+            ):
+                guild_bullets.append(_format_guild_memory_row(row))
+
+        context_data = _merge_context_bullets(guild_bullets, user_bullets)
+        context_data = trim_context_to_limit(context_data)
+        if not context_data and guild_id == 0:
+            continue
+        conn.execute(
+            """INSERT INTO server_context (guild_id, context_data, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(guild_id) DO UPDATE SET
+                 context_data = excluded.context_data,
+                 updated_at = excluded.updated_at""",
+            (guild_id, context_data, _now_iso()),
+        )
+
+    if has_user:
+        conn.execute("DROP TABLE user_memory")
+    if has_guild:
+        conn.execute("DROP TABLE guild_memory")
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (_MIGRATION_FLAG, "1"),
+    )
 
 
-def delete_guild_memory(guild_id: int, memory_key: str, context: str = "") -> bool:
-    """Delete a specific server memory. Returns True if something was deleted."""
+def get_server_context(guild_id: int) -> str:
+    """Return the compact server context document for a guild."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT context_data FROM server_context WHERE guild_id = ?",
+            (guild_id,),
+        ).fetchone()
+        return row["context_data"] if row else ""
+
+
+def set_server_context(guild_id: int, context_data: str) -> None:
+    """Store or replace the server context document."""
+    context_data = trim_context_to_limit(context_data.strip())
+    with _connect() as conn:
+        conn.execute(
+            """INSERT INTO server_context (guild_id, context_data, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(guild_id) DO UPDATE SET
+                 context_data = excluded.context_data,
+                 updated_at = excluded.updated_at""",
+            (guild_id, context_data, _now_iso()),
+        )
+
+
+def clear_server_context(guild_id: int) -> bool:
+    """Clear server context for a guild. Returns True if non-empty context was cleared."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT context_data FROM server_context WHERE guild_id = ?", (guild_id,)
+        ).fetchone()
+        if not row or not row["context_data"].strip():
+            return False
+        conn.execute(
+            "UPDATE server_context SET context_data = '', updated_at = ? WHERE guild_id = ?",
+            (_now_iso(), guild_id),
+        )
+        return True
+
+
+def delete_server_context(guild_id: int) -> bool:
+    """Remove the server context row entirely."""
     with _connect() as conn:
         cursor = conn.execute(
-            "DELETE FROM guild_memory WHERE guild_id = ? AND memory_key = ? AND context = ?",
-            (guild_id, memory_key, context),
+            "DELETE FROM server_context WHERE guild_id = ?", (guild_id,)
         )
         return cursor.rowcount > 0
 
 
-def clear_all_guild_memories(guild_id: int) -> int:
-    """Remove all server memories for a guild."""
-    with _connect() as conn:
-        cursor = conn.execute("DELETE FROM guild_memory WHERE guild_id = ?", (guild_id,))
-        return cursor.rowcount
-
-
-def get_all_user_memories(user_id: int, limit: int = 20) -> list[sqlite3.Row]:
-    """Get recent memories for a user (limited to save tokens).
-
-    Returns most recently updated memories first.
-    """
+def all_server_contexts() -> list[sqlite3.Row]:
+    """All non-empty server context rows, for admin inspection."""
     with _connect() as conn:
         return conn.execute(
-            "SELECT * FROM user_memory WHERE user_id = ? ORDER BY updated_at DESC LIMIT ?",
-            (user_id, limit),
+            "SELECT * FROM server_context WHERE context_data != '' ORDER BY guild_id"
         ).fetchall()
-
-
-def delete_user_memory(user_id: int, memory_key: str, context: str = "") -> bool:
-    """Delete a specific memory. Returns True if something was deleted."""
-    with _connect() as conn:
-        cursor = conn.execute(
-            "DELETE FROM user_memory WHERE user_id = ? AND memory_key = ? AND context = ?",
-            (user_id, memory_key, context),
-        )
-        return cursor.rowcount > 0
-
-
-def clear_all_user_memories(user_id: int) -> int:
-    """Remove all personal memories for a user."""
-    with _connect() as conn:
-        cursor = conn.execute("DELETE FROM user_memory WHERE user_id = ?", (user_id,))
-        return cursor.rowcount
-
-
-def build_user_context(user_id: int, mentioned_user_ids: list[int] | None = None) -> str:
-    """Build a compact context string from relevant memories.
-
-    Only includes memories relevant to the current conversation to minimize tokens.
-    Returns empty string if no relevant memories exist.
-    """
-    memories = []
-
-    # Get user's general preferences first
-    all_memories = get_all_user_memories(user_id, limit=20)
-
-    for mem in all_memories:
-        if mem["memory_key"] == "nickname_preference":
-            # Only include nickname if that user is mentioned in this conversation
-            target_id_str = mem["context"]
-            if not mentioned_user_ids or int(target_id_str) in mentioned_user_ids:
-                memories.append(f"Call <@{target_id_str}> as '{mem['memory_value']}'")
-        elif mem["memory_key"] == "portfolio_link":
-            memories.append(f"User's portfolio: {mem['memory_value']}")
-        elif mem["memory_key"] == "github_link":
-            memories.append(f"User's GitHub: {mem['memory_value']}")
-        elif mem["memory_key"] == "linkedin_link":
-            memories.append(f"User's LinkedIn: {mem['memory_value']}")
-        elif mem["memory_key"] == "work_link":
-            memories.append(f"User's work link: {mem['memory_value']}")
-        elif mem["memory_key"] == "work_role":
-            memories.append(f"User works as: {mem['memory_value']}")
-        elif mem["memory_key"] == "user_preference":
-            memories.append(f"User prefers: {mem['memory_value']}")
-        elif mem["memory_key"] == "language_preference":
-            memories.append(f"User prefers {mem['memory_value']} language")
-        elif mem["memory_key"] == "formality_level":
-            memories.append(f"Use {mem['memory_value']} tone with this user")
-        elif mem["memory_key"] == "custom_note":
-            # Generic notes about the user's preferences or context
-            memories.append(mem["memory_value"])
-
-    if not memories:
-        return ""
-
-    # Hard limit to 20 items to keep token usage reasonable
-    return "User context:\n" + "\n".join(f"- {m}" for m in memories[:20])
-
-
-def build_guild_context(guild_id: int) -> str:
-    """Build a compact context string from server-wide memories."""
-    memories = []
-    for mem in get_all_guild_memories(guild_id, limit=20):
-        if mem["memory_key"] == "language_preference":
-            memories.append(f"Speak in {mem['memory_value']} for this server")
-        elif mem["memory_key"] == "server_topic_memory":
-            memories.append(f"Remember past conversations and topics: {mem['memory_value']}")
-        elif mem["memory_key"] == "custom_note":
-            memories.append(mem["memory_value"])
-
-    if not memories:
-        return ""
-    return "Server context:\n" + "\n".join(f"- {m}" for m in memories[:10])
 
 
 # ---------------------------------------------------------------------------
