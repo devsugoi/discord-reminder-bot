@@ -155,9 +155,9 @@ async def upsert_event(
     calendar heals instead of erroring forever.
     """
     body = _to_gcal_body(event)
-    events_api = _get_service().events()
 
     def _call() -> dict:
+        events_api = _get_service().events()
         if gcal_event_id:
             try:
                 return events_api.patch(
@@ -177,9 +177,9 @@ async def upsert_event(
 
 async def delete_event(calendar_id: str, gcal_event_id: str) -> None:
     """Remove one calendar entry; 404/410 means it's already gone - fine."""
-    events_api = _get_service().events()
 
     def _call() -> None:
+        events_api = _get_service().events()
         try:
             events_api.delete(calendarId=calendar_id, eventId=gcal_event_id).execute(
                 num_retries=API_RETRIES
@@ -196,11 +196,12 @@ async def verify_write_access(calendar_id: str) -> str | None:
 
     Inserting (and immediately deleting) a tiny test event is the only
     reliable probe: a calendar shared read-only would pass a metadata read
-    but fail exactly when the first real event needs writing.
+    but fail exactly when the first real event needs writing. A successful
+    insert proves write access even if the cleanup delete fails.
     """
-    events_api = _get_service().events()
 
     def _call() -> None:
+        events_api = _get_service().events()
         now = datetime.now(timezone.utc)
         probe = {
             "summary": "Reminder Bot link test (auto-deleted)",
@@ -210,9 +211,17 @@ async def verify_write_access(calendar_id: str) -> str | None:
         created = events_api.insert(calendarId=calendar_id, body=probe).execute(
             num_retries=API_RETRIES
         )
-        events_api.delete(calendarId=calendar_id, eventId=created["id"]).execute(
-            num_retries=API_RETRIES
-        )
+        try:
+            events_api.delete(calendarId=calendar_id, eventId=created["id"]).execute(
+                num_retries=API_RETRIES
+            )
+        except HttpError as error:
+            # Insert succeeded = write access works; leave a log if cleanup fails.
+            logger.warning(
+                "Calendar: probe insert OK for %s but delete failed (%s); "
+                "test event %s may remain",
+                calendar_id, error.resp.status, created.get("id"),
+            )
 
     try:
         await asyncio.to_thread(_call)

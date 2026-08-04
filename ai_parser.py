@@ -649,10 +649,11 @@ def build_chat_payload(
         parts.append("Search results:")
         parts.append(search_results)
     if image_count > 0:
+        pronoun = "it" if image_count == 1 else "them"
         parts.append(
             f"{author_name} sent you {image_count} "
             f"{'image' if image_count == 1 else 'images'} along with this message. "
-            "Look at {'it' if image_count == 1 else 'them'} carefully."
+            f"Look at {pronoun} carefully."
         )
     parts.append(f"{author_name} is talking to you and said:")
     parts.append(f'  "{message_text}"')
@@ -682,8 +683,6 @@ async def chat_reply(
     bot_name: str,
     context_lines: list[str],
     search_results: str | None = None,
-    user_id: int | None = None,
-    mentioned_user_ids: list[int] | None = None,
     image_datas: list[tuple[bytes, str]] | None = None,
     guild_id: int | None = None,
 ) -> tuple[Optional[str], Optional[str]]:

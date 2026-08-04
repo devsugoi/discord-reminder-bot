@@ -20,6 +20,7 @@ Discord event changes (see calendar_sync.py).
 
 import logging
 import os
+import random
 import re
 import asyncio
 from collections import deque
@@ -172,6 +173,7 @@ class ReminderBot(commands.Bot):
         self.tree.add_command(settings_group)
         self.tree.add_command(calendar_group)
         self.tree.add_command(raffle_group)
+        self.tree.add_command(chatbot_group)
         if GUILD_ID:
             # Copy to one guild for instant availability while testing.
             guild = discord.Object(id=int(GUILD_ID))
@@ -218,6 +220,10 @@ class ReminderBot(commands.Bot):
         if seconds <= 0:
             return False
         now = datetime.now()
+        # Drop expired entries so the dict can't grow without bound
+        expired = [uid for uid, until in self._chat_cooldowns.items() if until <= now]
+        for uid in expired:
+            del self._chat_cooldowns[uid]
         if self._chat_cooldowns.get(user_id, now) > now:
             return True
         self._chat_cooldowns[user_id] = now + timedelta(seconds=seconds)
@@ -275,9 +281,9 @@ class ReminderBot(commands.Bot):
         already_sent = db.get_setting(f"notified_{notice_key}", "")
         if already_sent == today:
             return
-        db.set_setting(f"notified_{notice_key}", today)
         logger.info("Owner notification (%s): %s", notice_key, text)
-        await self.dm_owner(text)
+        if await self.dm_owner(text):
+            db.set_setting(f"notified_{notice_key}", today)
 
 
 bot = ReminderBot()
@@ -360,7 +366,7 @@ async def fetch_context_lines(message: discord.Message) -> list[str]:
     return lines
 
 
-def guess_person_id(message: discord.Message, analysis: ChatAnalysis) -> int | None:
+def guess_person_id(message: discord.Message, analysis: ChatAnalysis | None = None) -> int | None:
     """Best guess at the counterparty's Discord ID.
 
     If the author isn't the owner, the author is almost always the other
@@ -368,12 +374,7 @@ def guess_person_id(message: discord.Message, analysis: ChatAnalysis) -> int | N
     mention is ("@alex you owe me 500") - never ourselves, since the owner may
     well have been talking TO the bot.
     """
-    # Use analysis to get counterparty name if available
-    if analysis.counterparty or analysis.update_person:
-        # This is just to use the analysis parameter to satisfy the linter
-        # The actual logic doesn't change
-        pass
-
+    del analysis  # reserved for future name-based matching
     if message.author.id != OWNER_ID:
         return message.author.id
     for user in message.mentions:
@@ -412,13 +413,28 @@ def parse_due_datetime(raw_value: str | None) -> datetime | None:
         "%b %d, %Y, %I:%M%p",     # "Dec 24, 2050, 11:45pm"
         "%B %d, %Y %I:%M %p",     # "December 24, 2050 11:45 pm" (space before am/pm)
         "%b %d, %Y %I:%M %p",     # "Dec 24, 2050 11:45 pm"
-        "%B %d, %Y",              # "December 24, 2050"
-        "%b %d, %Y",              # "Dec 24, 2050"
         "%Y-%m-%d %I:%M%p",       # "2050-12-24 11:45pm"
         "%Y-%m-%d %I:%M %p",      # "2050-12-24 11:45 pm"
         "%m/%d/%Y %H:%M",         # "12/24/2050 23:45"
-        "%m/%d/%Y",               # "12/24/2050"
     ]
+    date_only_fallback_formats = (
+        "%B %d, %Y",              # "December 24, 2050"
+        "%b %d, %Y",              # "Dec 24, 2050"
+        "%m/%d/%Y",               # "12/24/2050"
+    )
+
+    normalized = raw_value.replace("am", "AM").replace("pm", "PM")
+    for fmt in fallback_formats:
+        try:
+            return datetime.strptime(normalized, fmt)
+        except ValueError:
+            pass
+    for fmt in date_only_fallback_formats:
+        try:
+            day = datetime.strptime(normalized, fmt)
+            return day.replace(hour=DEFAULT_REMINDER_HOUR, minute=0)
+        except ValueError:
+            pass
 
     logger.warning("Could not parse reminder date: %r", raw_value)
     return None
@@ -642,8 +658,6 @@ def apply_analysis(
             if analysis.duration:
                 # Simple duration parsing - in a full implementation we'd parse this better
                 try:
-                    # Try to extract a number from the duration string
-                    import re
                     numbers = re.findall(r'\d+', analysis.duration)
                     if numbers:
                         duration_minutes = int(numbers[0])
@@ -652,7 +666,7 @@ def apply_analysis(
                             duration_minutes *= 60
                         elif 'day' in analysis.duration.lower():  # "day" has no false positive
                             duration_minutes *= 60 * 24
-                except:
+                except (ValueError, IndexError):
                     duration_minutes = 1  # Default 1 min if parsing fails
 
             description = analysis.prize_description or "Mystery prize!"
@@ -734,15 +748,17 @@ def apply_analysis(
             if not user_id:
                 return "Di ko malaman kung sino'ng sumasali."
 
-            # Check if already participated
+            # Check if already participated / capacity
             participants = db.get_raffle_participants(raffle["id"])
             if any(p["user_id"] == user_id for p in participants):
                 return f"Na-join-an mo na 'yang raffle #{raffle['id']}!"
+            if raffle["max_participants"] and len(participants) >= raffle["max_participants"]:
+                return f"Puno na ang Raffle #{raffle['id']}!"
 
             # No balance check - joining is free!
 
             if db.join_raffle(raffle["id"], user_id, user_name, "natural_language"):
-                return f"✅ Sumali nakaa sa raffle #{raffle['id']}! Prize: {format_money(raffle['currency'], db._raffle_prize(raffle))}. Good luck! 🍀"
+                return f"✅ Sumali nakaa sa raffle #{raffle['id']}! Prize: {format_money(raffle['currency'], db.raffle_prize(raffle))}. Good luck! 🍀"
             else:
                 return "Di maka-join sa raffle. Subukan mo ulit."
 
@@ -1120,7 +1136,11 @@ def _looks_like_search_query(question: str) -> bool:
     return False
 
 
-async def handle_mention_detection(message: discord.Message, question: str) -> bool:
+async def handle_mention_detection(
+    message: discord.Message,
+    question: str,
+    context_lines: list[str] | None = None,
+) -> bool:
     """Act on a reminder or debt someone asked the bot for directly.
 
     Being pinged, the most explicit request there is, so a reminder here is
@@ -1137,7 +1157,9 @@ async def handle_mention_detection(message: discord.Message, question: str) -> b
     # No involves_owner() gate here, unlike the passive watcher: the message was
     # addressed to the bot, and the bot stands in for the owner. That is what
     # makes "@bot utang ko sayo 500" count.
-    analysis, error_kind = await run_detection(message, text=question, in_hot_window=False)
+    analysis, error_kind = await run_detection(
+        message, text=question, in_hot_window=False, context_lines=context_lines
+    )
     if error_kind or analysis is None or analysis.kind == "none":
         # Fallback: when someone @-mentions the bot asking for a raffle and the AI
         # misfires (returns "none"), call the simple keyword-based handler instead
@@ -1179,18 +1201,14 @@ async def _handle_raffle_fallback(message: discord.Message, question: str) -> bo
     Called only after prescan confirmed "raffle" keywords but the AI returned
     kind=="none".  Builds a minimal ChatAnalysis and calls apply_analysis.
     """
-    import re
     from ai_parser import ChatAnalysis
     from detection import MONEY_PATTERN
 
     q = question.lower()
 
-    # --- action detection ---
-    if any(w in q for w in ("create", "raffle off", "new ", "start ",
-                             "mag-", "gawa", "simulan", "meron", "lets")):
-        action = "create"
-    elif any(w in q for w in ("end ", "close", "tapos", "pick winner",
-                               "i-pull", "hugot", "bunot", "draw winner")):
+    # --- action detection (end/cancel/join before create so "new raffle" join isn't misclassified) ---
+    if any(w in q for w in ("end ", "close", "tapos", "pick winner",
+                             "i-pull", "hugot", "bunot", "draw winner")):
         action = "end"
     elif any(w in q for w in ("cancel", "delete", "remove", "bura",
                                "alis", "wag", "call it off")):
@@ -1198,6 +1216,9 @@ async def _handle_raffle_fallback(message: discord.Message, question: str) -> bo
     elif any(w in q for w in ("join", "enter", "sali ", "count ", "ako ",
                                "gusto ", "pa-join", "rais ")):
         action = "join"
+    elif any(w in q for w in ("create", "raffle off", "new ", "start ",
+                               "mag-", "gawa", "simulan", "meron", "lets")):
+        action = "create"
     else:
         # Default to create - if they said "raffle", they probably want one
         action = "create"
@@ -1380,10 +1401,13 @@ async def handle_chat_mention(message: discord.Message) -> None:
     if await handle_memory_command(message, question):
         return
 
+    # Fetch channel history once — reused by detection and the chat reply.
+    context_lines = await fetch_context_lines(message)
+
     # A reminder or debt asked of us directly is a request, not conversation.
     # This runs before the cooldown because it is real work, not chatter, and
     # the prescan keeps it rare - it also spends the detection budget, not chat's.
-    if await handle_mention_detection(message, question):
+    if await handle_mention_detection(message, question, context_lines=context_lines):
         return
 
     if bot.chat_on_cooldown(message.author.id):
@@ -1412,6 +1436,8 @@ async def handle_chat_mention(message: discord.Message) -> None:
     # Capped at 3 images to keep token usage reasonable.
     image_datas: list[tuple[bytes, str]] = []
     for attachment in message.attachments:
+        if len(image_datas) >= 3:
+            break
         if attachment.content_type and attachment.content_type.startswith("image/"):
             try:
                 img_bytes = await attachment.read()
@@ -1422,11 +1448,6 @@ async def handle_chat_mention(message: discord.Message) -> None:
                 )
             except (discord.HTTPException, discord.NotFound) as exc:
                 logger.warning("Could not download attachment %s: %s", attachment.filename, exc)
-    if len(image_datas) > 3:
-        logger.debug("Capping %d images to 3", len(image_datas))
-        image_datas = image_datas[:3]
-
-    context_lines = await fetch_context_lines(message)
     search_results = None
     is_search_query = _looks_like_search_query(question)
     logger.debug(
@@ -1468,8 +1489,6 @@ async def handle_chat_mention(message: discord.Message) -> None:
             bot_name=bot.user.display_name,
             context_lines=context_lines,
             search_results=search_results,
-            user_id=message.author.id,
-            mentioned_user_ids=mentioned_user_ids,
             image_datas=image_datas or None,
             guild_id=message.guild.id if message.guild else None,
         )
@@ -1602,7 +1621,10 @@ async def handle_chat_mention(message: discord.Message) -> None:
 
 
 async def run_detection(
-    message: discord.Message, text: str, in_hot_window: bool
+    message: discord.Message,
+    text: str,
+    in_hot_window: bool,
+    context_lines: list[str] | None = None,
 ) -> tuple[ChatAnalysis | None, str | None]:
     """Spend one detection AI call on `text` and return what it found.
 
@@ -1628,7 +1650,8 @@ async def run_detection(
         for user in message.mentions
         if bot.user is None or user.id != bot.user.id
     ]
-    context_lines = await fetch_context_lines(message)
+    if context_lines is None:
+        context_lines = await fetch_context_lines(message)
     payload = build_payload(
         message_text=text,
         author_name=message.author.display_name,
@@ -1713,11 +1736,17 @@ async def on_message(message: discord.Message) -> None:
         message.content[:120],
     )
 
-    # Scope gate: debt talk must involve the owner; reminders and raffles can come from
+    # Raffle chatter is handled via @mention / slash commands — never via the
+    # owner Confirm/Ignore DM (that path has no guild context and always fails).
+    if categories == {"raffle"}:
+        logger.debug("Skipped %s: raffle keywords without @mention", message.id)
+        return
+
+    # Scope gate: debt talk must involve the owner; reminders can come from
     # anyone; hot-window follow-ups already proved their relevance.
-    if hot_window is None and "reminder" not in categories and "raffle" not in categories:
+    if hot_window is None and "reminder" not in categories:
         if not involves_owner(message):
-            logger.debug("Skipped %s: debt/raffle keywords but owner not involved", message.id)
+            logger.debug("Skipped %s: debt keywords but owner not involved", message.id)
             return
 
     # Keyword-less follow-ups are capped per window; keyword hits always pass.
@@ -1737,6 +1766,9 @@ async def on_message(message: discord.Message) -> None:
         return
     if analysis is None or analysis.kind == "none":
         logger.debug("Message %s: AI says not an event", message.id)
+        return
+    if analysis.kind == "raffle":
+        logger.debug("Skipped %s: AI classified overheard raffle (use @mention)", message.id)
         return
     if analysis.confidence < CONFIDENCE_THRESHOLD:
         logger.debug(
@@ -2272,7 +2304,9 @@ chatbot_group = app_commands.Group(
 
 # Raffle commands - available to everyone
 raffle_group = app_commands.Group(
-    name="raffle", description="Join and manage raffles", extras={"public": True}
+    name="raffle",
+    description="Sumali sa raffles at manalo ng virtual currency",
+    extras={"public": True},
 )
 
 
@@ -2514,11 +2548,13 @@ async def remind_add(
 
 @remind_group.command(name="list", description="Show your pending reminders")
 async def remind_list(interaction: discord.Interaction) -> None:
-    reminders = db.pending_reminders()
     # Everyone sees only their own; the owner sees the whole schedule.
     is_owner = interaction.user.id == OWNER_ID
-    if not is_owner:
-        reminders = [r for r in reminders if r["requester_id"] == interaction.user.id]
+    reminders = (
+        db.pending_reminders()
+        if is_owner
+        else db.pending_reminders_for(interaction.user.id)
+    )
     if not reminders:
         await interaction.response.send_message(
             "No pending reminders." if is_owner else "You have no pending reminders.",
@@ -2611,19 +2647,6 @@ _STATUS_VERBS = {
 }
 
 
-# Raffle command group - public so anyone can use
-raffle_group = app_commands.Group(
-    name="raffle",
-    description="Sumali sa raffles at manalo ng virtual currency",
-    extras={"public": True},
-)
-
-# Chatbot command group - owner-only
-chatbot_group = app_commands.Group(
-    name="chatbot", description="Adjust chatbot settings", default_permissions=_OWNER_ONLY
-)
-
-
 @settings_group.command(name="status", description='Set the bot\'s status (e.g. "Playing DOOM")')
 @app_commands.describe(
     activity="How the status is phrased",
@@ -2691,7 +2714,6 @@ async def raffle_create(
 
     # If no prize specified, generate a random amount between 100-5000
     if prize is None:
-        import random
         prize = random.choice([100, 200, 500, 1000, 2000, 5000])
 
     # Calculate end time if duration specified
@@ -2811,7 +2833,7 @@ async def raffle_join(
     if db.join_raffle(raffle["id"], user_id, user_name, "command"):
         await interaction.response.send_message(
             f"✅ Sumali ka na sa Raffle #{raffle['id']}! "
-            f"Prize pool: {format_money(raffle['currency'], db._raffle_prize(raffle))}. "
+            f"Prize pool: {format_money(raffle['currency'], db.raffle_prize(raffle))}. "
             f"Good luck! 🍀",
             ephemeral=False
         )
@@ -2914,8 +2936,8 @@ async def raffle_end(
     # Defer response since winner selection might take a moment
     await interaction.response.defer(ephemeral=False)
 
-    # Add 3-second loading animation with influencer style
-    await interaction.followup.send("🎵 *PINAPA-IKOT ANG GULONG...* 🎵")
+    # Add 3-second loading animation with influencer style (edit the deferred reply)
+    await interaction.edit_original_response(content="🎵 *PINAPA-IKOT ANG GULONG...* 🎵")
     await asyncio.sleep(1)
     await interaction.edit_original_response(content="🎵 *MALAPIT NA...* 🎵")
     await asyncio.sleep(1)
@@ -2938,10 +2960,12 @@ async def raffle_end(
         # Get winner's new balance (already updated in db.end_raffle)
         new_balance, new_currency = db.get_user_balance(winner_id, guild_id)
 
+        winner_display = f"<@{winner_id}>" if winner_id else winner_name
+
         # Create celebration message
         embed = discord.Embed(
             title=f"🎉🎉🎉 RAFFLE #{raffle_id} TAPOS NA! 🎉🎉🎉",
-            description=f"**{winner_name.mention if hasattr(winner_name, 'mention') else winner_name}** ay nanalo ng **{format_money(raffle['currency'], prize_amount)}**! 💰",
+            description=f"**{winner_display}** ay nanalo ng **{format_money(raffle['currency'], prize_amount)}**! 💰",
             color=0xFF0000  # Red for excitement
         )
         embed.add_field(
@@ -2952,12 +2976,11 @@ async def raffle_end(
         )
         embed.add_field(
             name="💰 Bagong Balance",
-            value=f"{winner_name.mention if hasattr(winner_name, 'mention') else winner_name}: {format_money(raffle['currency'], new_balance)}",
+            value=f"{winner_display}: {format_money(raffle['currency'], new_balance)}",
             inline=False
         )
 
         # Add some hype messages
-        import random
         hype_messages = [
             "ABANGAN ANG SUSUNOD NA BIG GIVEAWAY!",
             "MAG-LIKE AT MAG-SUBSCRIBE PARA SA MORE CHANCES TO WIN!",
@@ -2996,19 +3019,21 @@ async def raffle_list(interaction: discord.Interaction) -> None:
         color=0x00FF00  # Green
     )
 
-    for raffle in raffles[:10]:  # Limit to 10 to avoid too long messages
+    shown = raffles[:10]  # Limit to 10 to avoid too long messages
+    counts = db.raffle_participant_counts([r["id"] for r in shown])
+    for raffle in shown:
         status = "🟢 Active" if raffle["active"] else "🔴 Tapos na"
         ends_at_str = ""
         if raffle["ends_at"]:
             ends_at = datetime.fromisoformat(raffle["ends_at"])
             ends_at_str = f"\nMatatapos: {ends_at.strftime('%m/%d %H:%M')}"
 
-        participant_count = len(db.get_raffle_participants(raffle["id"]))
+        participant_count = counts.get(raffle["id"], 0)
         limit_str = f"/{raffle['max_participants']}" if raffle['max_participants'] else "/∞"
 
         embed.add_field(
             name=f"Raffle #{raffle['id']} - {raffle['prize_description'] or 'Walang description'}",
-            value=f"💰 Prize: {format_money(raffle['currency'], db._raffle_prize(raffle))}\n"
+            value=f"💰 Prize: {format_money(raffle['currency'], db.raffle_prize(raffle))}\n"
                   f"👥 {participant_count}{limit_str} sumali\n"
                   f"{status}{ends_at_str}",
             inline=True
@@ -3061,7 +3086,7 @@ async def raffle_info(
     # Entry info
     embed.add_field(
         name="💰 Prize Info",
-        value=f"• Prize: {format_money(raffle['currency'], db._raffle_prize(raffle))}\n"
+        value=f"• Prize: {format_money(raffle['currency'], db.raffle_prize(raffle))}\n"
               f"• Currency: {raffle['currency']}\n"
               f"• {'Walang limit' if not raffle['max_participants'] else raffle['max_participants']} max participants",
         inline=True
@@ -3223,8 +3248,7 @@ async def raffle_autorole(
         return
 
     if not await ensure_owner(interaction):
-        # Only owner can configure this for now - later we could allow admins with permissions
-        await interaction.response.send_message("Ang bot owner lang ang pwedeng mag-configure ng auto-join roles.", ephemeral=True)
+        # ensure_owner already sent the denial response
         return
 
     role_id = role.id if role else None
@@ -3281,10 +3305,9 @@ async def chatbot_show(interaction: discord.Interaction) -> None:
         else f"shared with detection ({len(ai_parser.detection_keys())} key(s))"
     )
     backup = (
-        f" (backups: {', '.join(f'`{m}`' for m in CHATBOT_FALLBACK_MODELS if m)}"
+        f" (backups: {', '.join(f'`{m}`' for m in CHATBOT_FALLBACK_MODELS if m)})"
         if CHATBOT_FALLBACK_MODELS and any(CHATBOT_FALLBACK_MODELS)
         else ""
-        + ")"
     )
     await interaction.response.send_message(
         "💬 **Chat replies**\n"

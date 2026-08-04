@@ -125,30 +125,9 @@ def init() -> None:
                 updated_at TEXT NOT NULL
             )"""
         )
-        # Legacy tables may exist on older databases; migration folds them into
-        # server_context and drops them (see _migrate_legacy_memory).
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS user_memory (
-                user_id INTEGER NOT NULL,
-                memory_key TEXT NOT NULL,
-                memory_value TEXT NOT NULL,
-                context TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (user_id, memory_key, context)
-            )"""
-        )
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS guild_memory (
-                guild_id INTEGER NOT NULL,
-                memory_key TEXT NOT NULL,
-                memory_value TEXT NOT NULL,
-                context TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (guild_id, memory_key, context)
-            )"""
-        )
+        # Legacy user_memory / guild_memory tables are NOT created here.
+        # If they already exist on an older DB, _migrate_legacy_memory folds
+        # them into server_context and drops them.
         conn.execute(
             """CREATE TABLE IF NOT EXISTS raffles (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -372,6 +351,16 @@ def pending_reminders() -> list[sqlite3.Row]:
     with _connect() as conn:
         return conn.execute(
             "SELECT * FROM reminders WHERE delivered_at IS NULL ORDER BY due_at"
+        ).fetchall()
+
+
+def pending_reminders_for(requester_id: int) -> list[sqlite3.Row]:
+    """Pending reminders belonging to one requester, soonest first."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT * FROM reminders WHERE delivered_at IS NULL AND requester_id = ? "
+            "ORDER BY due_at",
+            (requester_id,),
         ).fetchall()
 
 
@@ -895,12 +884,15 @@ def get_raffle(raffle_id: int) -> sqlite3.Row | None:
         return conn.execute("SELECT * FROM raffles WHERE id = ?", (raffle_id,)).fetchone()
 
 
-def _raffle_prize(raffle: sqlite3.Row) -> float:
+def raffle_prize(raffle: sqlite3.Row) -> float:
     """Safely read prize_amount, falling back to entry_cost for unmigrated databases."""
     try:
-        return raffle["prize_amount"]
-    except KeyError:
-        return raffle["entry_cost"]
+        return float(raffle["prize_amount"])
+    except (KeyError, IndexError, TypeError):
+        try:
+            return float(raffle["entry_cost"])
+        except (KeyError, IndexError, TypeError):
+            return 0.0
 
 
 def get_active_raffles(channel_id: int | None = None, guild_id: int | None = None) -> list[sqlite3.Row]:
@@ -966,6 +958,20 @@ def get_raffle_participants(raffle_id: int) -> list[sqlite3.Row]:
         ).fetchall()
 
 
+def raffle_participant_counts(raffle_ids: list[int]) -> dict[int, int]:
+    """Return {raffle_id: participant_count} for the given raffles in one query."""
+    if not raffle_ids:
+        return {}
+    placeholders = ",".join("?" for _ in raffle_ids)
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT raffle_id, COUNT(*) AS cnt FROM raffle_participants "
+            f"WHERE raffle_id IN ({placeholders}) GROUP BY raffle_id",
+            raffle_ids,
+        ).fetchall()
+        return {int(row["raffle_id"]): int(row["cnt"]) for row in rows}
+
+
 def end_raffle(raffle_id: int) -> dict | None:
     """End a raffle, select a random winner, and return the winner's info and raffle stats.
     Returns None if raffle has no participants or is already ended."""
@@ -994,21 +1000,7 @@ def end_raffle(raffle_id: int) -> dict | None:
         # Select random winner
         import random
         winner = random.choice(participants)
-
-        # Prize amount is the fixed prize the creator set
-        # Fallback for databases that haven't been migrated yet
-        try:
-            prize_amount = raffle["prize_amount"]
-        except KeyError:
-            prize_amount = raffle.get("entry_cost", 0.0)
-
-        # Update raffle with winner and end time
-        conn.execute(
-            """UPDATE raffles
-               SET active = 0, ended_at = ?, winner_id = ?, winner_name = ?
-               WHERE id = ?""",
-            (_now_iso(), winner["user_id"], winner["user_name"], raffle_id),
-        )
+        prize_amount = raffle_prize(raffle)
 
         # Update raffle with winner and end time
         conn.execute(

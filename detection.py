@@ -98,43 +98,31 @@ _REMINDER_STRONG_PATTERNS = [
 ]
 
 # ---------------------------------------------------------------------------
-# RAFFLE — strong signals.
+# RAFFLE — strong signals (clear raffle/giveaway intent on their own).
 # ---------------------------------------------------------------------------
 _RAFFLE_STRONG_PATTERNS = [
-    # -- Tagalog/Libre --
-    r"\w*raffle\w*",         # raffle, raffling, raffled
-    r"\w*giveaway\w*",       # giveaway, giveaways
-    r"\bsweepstakes\b",      # sweepstakes
-    r"\blottery\b",          # lottery
-    r"\bdraw\b|\bdrawing\b", # draw, drawing
-    r"\bpoto\s*pot\b",       # poto pot (Filipino raffle term)
-    r"\bswerte\b",           # suwerte/luck (in raffle context)
-    r"\bhadiah\b",           # hadiah (prize in Indonesian/Malay, sometimes used)
-    r"\bpremio\b",           # premio (prize in Spanish)
-    r"\bpremyo\b",           # premyo (prize in Tagalog/Spanish mix)
-    r"\bislip\b",            # islIP? actually no, let me think of Filipino raffle terms
-    r"\btombo\b",            # tombola/raffle
-    r"\ bingo\b",            # bingo (sometimes used for raffles)
-    r"\bjackpot\b",          # jackpot
-    r"\bprize\b",            # prize
-    # -- English --
-    r"\bwin\b.*\bwin\b",     # double win (like "win win")
-    r"\bluckydraw\b",        # lucky draw
+    r"\w*raffle\w*",             # raffle, raffling, raffled
+    r"\w*giveaway\w*",           # giveaway, giveaways
+    r"\bsweepstakes\b",
+    r"\blottery\b",
+    r"\bpremyo\b",               # Tagalog/Spanish mix "prize"
+    r"\bpremio\b",               # Spanish "prize"
+    r"\bjackpot\b",
+    r"\bprize\b",
+    r"\blucky\s*draw\b",         # "lucky draw" / "luckydraw"
 ]
 
 # ---------------------------------------------------------------------------
-# RAFFLE — weak signals: only count when certain context is also present.
+# RAFFLE — weak signals: only count when a money amount is also present.
 # ---------------------------------------------------------------------------
 _RAFFLE_WEAK_PATTERNS = [
-    r"\benter\b|\bentry\b",    # enter the raffle
-    r"\bjoin\b|\s*\s*joinin\b", # join
-    r"\bpisok\s*\*",           # pisuan/pisonet context sometimes
-    r"\bticket\b",             # ticket
-    r"\bnumber\b|\s*nos*\b",   # number/nos (ticket numbers)
-    r"\bwinner\b|\s*winners*\b", # winner(s)
-    r"\bpot\b",                # pot (as in prize pot)
-    r"\bjackpot\b",            # jackpot
-    r"\bapprox\b|\s*approximately\s*\b", # approximately
+    r"\benter\b|\bentry\b",
+    r"\bjoin(?:ing)?\b",
+    r"\bticket\b",
+    r"\bnumber\b",
+    r"\bwinners?\b",
+    r"\bpot\b",
+    r"\bdraw\b|\bdrawing\b",     # demoted: art/game chat uses these often
 ]
 
 _debt_strong_regex = re.compile("|".join(_DEBT_STRONG_PATTERNS), re.IGNORECASE)

@@ -92,22 +92,35 @@ def _search_google_cse(query: str) -> Tuple[Optional[str], Optional[str]]:
     return _summarize_cse_results(query, payload)
 
 
+def _safe_text(value: object, default: str = "") -> str:
+    """Coerce a possibly-null API field to a stripped string."""
+    if value is None:
+        return default
+    return str(value).strip() or default
+
+
 def _summarize_serpapi_results(query: str, payload: dict) -> Tuple[Optional[str], Optional[str]]:
     if not payload:
         return None, "no payload"
+
+    api_error = payload.get("error")
+    if api_error:
+        return None, f"serpapi error: {_safe_text(api_error, 'unknown')}"
 
     lines: list[str] = [f"Search results for: {query}"]
     answer_box = payload.get("answer_box") or payload.get("knowledge_graph")
     if isinstance(answer_box, dict):
         snippet = answer_box.get("snippet") or answer_box.get("description")
         if snippet:
-            lines.append(f"Quick answer: {snippet}")
+            lines.append(f"Quick answer: {_safe_text(snippet)}")
     organic = payload.get("organic_results") or []
     if isinstance(organic, list):
         for index, item in enumerate(organic[:WEB_SEARCH_RESULT_COUNT], start=1):
-            title = item.get("title", "(no title)").strip()
-            snippet = item.get("snippet", "").strip()
-            link = item.get("link") or item.get("displayed_link") or ""
+            if not isinstance(item, dict):
+                continue
+            title = _safe_text(item.get("title"), "(no title)")
+            snippet = _safe_text(item.get("snippet"))
+            link = _safe_text(item.get("link") or item.get("displayed_link"))
             line = f"{index}. {title}"
             if snippet:
                 line += f" - {snippet}"
@@ -130,14 +143,16 @@ def _summarize_cse_results(query: str, payload: dict) -> Tuple[Optional[str], Op
         if isinstance(request_info, list) and request_info:
             source = request_info[0].get("searchTerms")
             if source:
-                lines[0] = f"Search results for: {source}"
+                lines[0] = f"Search results for: {_safe_text(source, query)}"
 
     items = payload.get("items") or []
     if isinstance(items, list):
         for index, item in enumerate(items[:WEB_SEARCH_RESULT_COUNT], start=1):
-            title = item.get("title", "(no title)").strip()
-            snippet = item.get("snippet", "").strip()
-            link = item.get("link", "").strip()
+            if not isinstance(item, dict):
+                continue
+            title = _safe_text(item.get("title"), "(no title)")
+            snippet = _safe_text(item.get("snippet"))
+            link = _safe_text(item.get("link"))
             line = f"{index}. {title}"
             if snippet:
                 line += f" - {snippet}"
