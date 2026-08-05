@@ -171,6 +171,13 @@ sees them) — except `/calendar`, `/help`, and `/raffle` commands, which any me
 | `/raffle balance [user]` | Check your or another user's virtual currency balance. |
 | `/raffle leaderboard` | Show top 5 richest members and your current rank. |
 | `/raffle autorole [role]` | Set role for automatic raffle participation. Use "off" to disable. |
+| `/news channel [channel]` | Set the channel where the daily Philippines news digest is posted (defaults to current). |
+| `/news time HH:MM` | Set the daily delivery time in 24-hour local/server time (default `09:00`). |
+| `/news toggle on\|off` | Turn the daily news digest on or off for this server. Requires `/news channel` first. |
+| `/news links on\|off` | Toggle clickable source links on each headline (default **on**). |
+| `/news language taglish\|english` | Rewrite headline bullets in casual Taglish or keep English (default **English**). |
+| `/news show` | Show daily news settings: enabled, channel, time, links, language, last sent. |
+| `/news now` | Post today's digest immediately for testing. |
 
 ---
 
@@ -267,6 +274,15 @@ All settings live in `.env` (copy `.env.example` and fill it in):
 | `MAX_FOLLOWUPS_PER_WINDOW` | `10` | Cap on keyword-less checks per window. |
 | `DEFAULT_CURRENCY` | `₱` | Assumed when amounts have no symbol. |
 | `DEFAULT_REMINDER_HOUR` | `9` | Delivery hour for date-only reminders. |
+| `NEWS_USE_AI` | `true` | Shorten daily news headlines with Gemini. `false` posts raw RSS titles. |
+| `NEWS_INCLUDE_LINKS` | `true` | Default for clickable source links on headlines. Override per server with `/news links`. |
+| `NEWS_TAGLISH_DEFAULT` | `false` | Default for casual Taglish headline bullets. Override per server with `/news language`. |
+| `NEWS_PH_COUNT` | `5` | Number of Philippines headlines in the daily digest. |
+| `NEWS_WORLD_COUNT` | `3` | Number of world headlines in the daily digest. |
+| `NEWS_MAX_CALLS_PER_DAY` | `2` | Daily Gemini budget for news summarization (shared across servers). |
+| `NEWS_MAX_CHARS` | `1800` | Max characters for the posted digest (Discord limit is 2000). |
+| `NEWS_PH_FEEDS` | Inquirer, Rappler, Philstar | Comma-separated RSS URLs for Philippines news. |
+| `NEWS_WORLD_FEEDS` | BBC World | Comma-separated RSS URLs for world news. |
 | `CUSTOM_SYSTEM_PROMPT` | empty | Extra instructions tacked onto the bot's AI system prompts for both detection and chat. Use it to dial in personality, tone, rules, or anything else you want the bot to know — no code changes needed. |
 | `LOG_LEVEL` | `INFO` | `DEBUG` shows every detection decision. |
 | `DB_PATH` | `debts.db` | Where the SQLite file lives. |
@@ -573,6 +589,7 @@ ai_parser.py      Two Gemini calls: a structured one for detection
 calendar_sync.py  Google Calendar client: service-account auth, event
                   translation, insert/patch/delete
 db.py             SQLite: debts, reminders, settings, edit trail, calendar links
+news.py           Daily news digest: RSS fetch, optional AI shorten, Discord formatting
 reminderbot.service   systemd unit for the Pi
 .env.example      Documented template for every setting
 ```

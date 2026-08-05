@@ -42,6 +42,7 @@ import smart_memory  # noqa: E402
 import url_reading  # noqa: E402
 import video_understanding  # noqa: E402
 import web_search  # noqa: E402
+import news  # noqa: E402
 from ai_parser import (  # noqa: E402
     CHATBOT_FALLBACK_MODELS,
     CHATBOT_MODEL,
@@ -84,6 +85,7 @@ CHATBOT_MAX_CALLS_PER_DAY = int(os.getenv("CHATBOT_MAX_CALLS_PER_DAY", "200"))
 CHATBOT_COOLDOWN_SECONDS = int(os.getenv("CHATBOT_COOLDOWN_SECONDS", "0"))
 CHATBOT_VIDEO_MAX_CALLS_PER_DAY = video_understanding.CHATBOT_VIDEO_MAX_CALLS_PER_DAY
 CHATBOT_URL_READING_MAX_CALLS_PER_DAY = url_reading.CHATBOT_URL_READING_MAX_CALLS_PER_DAY
+NEWS_MAX_CALLS_PER_DAY = news.NEWS_MAX_CALLS_PER_DAY
 
 # --- Google Calendar sync (optional - see calendar_sync.py) ----------------
 # The owner's calendar id straight from .env; friends add theirs at runtime
@@ -178,6 +180,7 @@ class ReminderBot(commands.Bot):
         self.tree.add_command(calendar_group)
         self.tree.add_command(raffle_group)
         self.tree.add_command(chatbot_group)
+        self.tree.add_command(news_group)
         if GUILD_ID:
             # Copy to one guild for instant availability while testing.
             guild = discord.Object(id=int(GUILD_ID))
@@ -188,6 +191,7 @@ class ReminderBot(commands.Bot):
             await self.tree.sync()
             logger.info("Slash commands synced globally (may take up to an hour to appear)")
         delivery_loop.start()
+        news_delivery_loop.start()
         calendar_reconcile_loop.start()  # exits instantly each pass if not configured
 
     # --- AI budget -------------------------------------------------------
@@ -233,6 +237,10 @@ class ReminderBot(commands.Bot):
         if today != self._budget_date:
             return 0
         return self._budget_used.get("chat_url", 0)
+
+    def consume_news_budget(self) -> bool:
+        """Take one unit of today's news-summarization budget."""
+        return self._consume_budget("news", NEWS_MAX_CALLS_PER_DAY)
 
     # --- Chat cooldown ----------------------------------------------------
 
@@ -2128,6 +2136,114 @@ async def wait_for_bot() -> None:
     await bot.wait_until_ready()
 
 
+async def build_daily_digest(*, taglish: bool = False) -> tuple[list[news.HeadlineItem], list[news.HeadlineItem]]:
+    """Fetch headlines and optionally shorten or rewrite them with Gemini."""
+    ph_items, world_items = await news.fetch_all_headlines()
+    wants_ai = taglish or news.NEWS_USE_AI
+    use_ai = wants_ai and bot.consume_news_budget()
+    return await news.summarize_digest(
+        ph_items,
+        world_items,
+        use_ai=use_ai,
+        taglish=taglish,
+    )
+
+
+async def deliver_daily_news_to_guild(
+    guild: discord.Guild,
+    ph_items: list[news.HeadlineItem],
+    world_items: list[news.HeadlineItem],
+    *,
+    mark_sent: bool = True,
+) -> str | None:
+    """Post the digest in the guild's configured channel."""
+    channel_id = db.news_channel_id(guild.id)
+    if channel_id is None:
+        return "No delivery channel configured."
+
+    channel = guild.get_channel(channel_id)
+    if channel is None:
+        channel = bot.get_channel(channel_id)
+    if not isinstance(channel, discord.TextChannel):
+        return "Delivery channel not found."
+
+    include_links = news.include_links_enabled(db.news_include_links(guild.id))
+    message = news.format_digest(ph_items, world_items, include_links=include_links)
+    await channel.send(message)
+    if mark_sent:
+        db.set_news_last_sent(guild.id, date.today().isoformat())
+    return None
+
+
+def guilds_due_for_news(now: datetime) -> list[discord.Guild]:
+    """Guilds that should receive today's digest at the current minute."""
+    today = now.date().isoformat()
+    due: list[discord.Guild] = []
+    for guild in bot.guilds:
+        if not db.news_enabled(guild.id):
+            continue
+        if db.news_channel_id(guild.id) is None:
+            continue
+        if db.news_last_sent(guild.id) == today:
+            continue
+        if not news.should_deliver_now(now, db.news_time(guild.id)):
+            continue
+        due.append(guild)
+    return due
+
+
+@tasks.loop(minutes=1)
+async def news_delivery_loop() -> None:
+    """Every minute: post the daily news digest to configured guild channels."""
+    now = datetime.now()
+    due_guilds = guilds_due_for_news(now)
+    if not due_guilds:
+        return
+
+    groups: dict[bool, list[discord.Guild]] = {}
+    for guild in due_guilds:
+        taglish = news.taglish_enabled(db.news_language(guild.id))
+        groups.setdefault(taglish, []).append(guild)
+
+    for taglish, guild_batch in groups.items():
+        try:
+            ph_items, world_items = await build_daily_digest(taglish=taglish)
+        except Exception:
+            logger.exception("Failed to build daily news digest (taglish=%s)", taglish)
+            continue
+
+        if not ph_items and not world_items:
+            logger.warning("Daily news digest had no headlines to deliver")
+            continue
+
+        for guild in guild_batch:
+            try:
+                error = await deliver_daily_news_to_guild(guild, ph_items, world_items)
+                if error:
+                    logger.warning("Daily news not delivered to guild %s: %s", guild.id, error)
+                    await bot.notify_owner_once_today(
+                        f"news_channel_{guild.id}",
+                        f"📰 Daily news could not post in **{guild.name}**: {error}",
+                    )
+                else:
+                    logger.info("Delivered daily news to guild %s", guild.id)
+            except discord.Forbidden:
+                logger.warning("Missing permission to post daily news in guild %s", guild.id)
+                await bot.notify_owner_once_today(
+                    f"news_forbidden_{guild.id}",
+                    f"📰 Daily news could not post in **{guild.name}** — missing Send Messages permission.",
+                )
+            except discord.NotFound:
+                logger.warning("Daily news channel missing for guild %s", guild.id)
+            except Exception:
+                logger.exception("Failed to deliver daily news to guild %s", guild.id)
+
+
+@news_delivery_loop.before_loop
+async def wait_for_bot_news() -> None:
+    await bot.wait_until_ready()
+
+
 # ---------------------------------------------------------------------------
 # Google Calendar sync
 # Scheduled events in allowed servers are mirrored onto every linked
@@ -2459,6 +2575,12 @@ settings_group = app_commands.Group(
 # Chatbot command group - owner-only
 chatbot_group = app_commands.Group(
     name="chatbot", description="Adjust chatbot settings", default_permissions=_OWNER_ONLY
+)
+
+news_group = app_commands.Group(
+    name="news",
+    description="Daily Philippines news digest",
+    default_permissions=_OWNER_ONLY,
 )
 
 # Raffle commands - available to everyone
@@ -3628,6 +3750,207 @@ async def chatbot_unmute(
     )
 
 
+@news_group.command(name="channel", description="Set the channel for daily news delivery")
+@app_commands.describe(channel="Which channel (defaults to this one)")
+async def news_channel(
+    interaction: discord.Interaction, channel: discord.TextChannel | None = None
+) -> None:
+    if not await ensure_owner(interaction):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "Run this command inside a server.", ephemeral=True
+        )
+        return
+    target = channel or interaction.channel
+    if not isinstance(target, discord.TextChannel):
+        await interaction.response.send_message(
+            "Pick a text channel for daily news.", ephemeral=True
+        )
+        return
+    db.set_news_channel_id(interaction.guild.id, target.id)
+    logger.info("Daily news channel for guild %s set to %s", interaction.guild.id, target.id)
+    await interaction.response.send_message(
+        f"📰 Daily news will post in {target.mention}.", ephemeral=True
+    )
+
+
+@news_group.command(name="time", description="Set the daily news delivery time (24-hour)")
+@app_commands.describe(when="Local time as HH:MM, e.g. 09:00")
+async def news_time_command(interaction: discord.Interaction, when: str) -> None:
+    if not await ensure_owner(interaction):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "Run this command inside a server.", ephemeral=True
+        )
+        return
+    if not db.set_news_time(interaction.guild.id, when):
+        await interaction.response.send_message(
+            f"I couldn't read `{when}` as a time — use HH:MM (24-hour), e.g. `09:00`.",
+            ephemeral=True,
+        )
+        return
+    logger.info("Daily news time for guild %s set to %s", interaction.guild.id, when)
+    await interaction.response.send_message(
+        f"📰 Daily news delivery time is now **{when}** (local/server time).",
+        ephemeral=True,
+    )
+
+
+@news_group.command(name="toggle", description="Turn daily news delivery on or off")
+@app_commands.choices(
+    state=[
+        app_commands.Choice(name="On", value="on"),
+        app_commands.Choice(name="Off (default)", value="off"),
+    ]
+)
+async def news_toggle(
+    interaction: discord.Interaction, state: app_commands.Choice[str]
+) -> None:
+    if not await ensure_owner(interaction):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "Run this command inside a server.", ephemeral=True
+        )
+        return
+    if state.value == "on" and db.news_channel_id(interaction.guild.id) is None:
+        await interaction.response.send_message(
+            "Set a delivery channel first with `/news channel`.", ephemeral=True
+        )
+        return
+    db.set_news_enabled(interaction.guild.id, state.value == "on")
+    logger.info("Daily news for guild %s switched: %s", interaction.guild.id, state.value)
+    await interaction.response.send_message(
+        f"📰 Daily news is now: **{state.name}**", ephemeral=True
+    )
+
+
+@news_group.command(name="links", description="Toggle clickable source links on headlines")
+@app_commands.choices(
+    state=[
+        app_commands.Choice(name="On (default)", value="on"),
+        app_commands.Choice(name="Off - plain text only", value="off"),
+    ]
+)
+async def news_links(
+    interaction: discord.Interaction, state: app_commands.Choice[str]
+) -> None:
+    if not await ensure_owner(interaction):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "Run this command inside a server.", ephemeral=True
+        )
+        return
+    db.set_news_include_links(interaction.guild.id, state.value == "on")
+    logger.info("Daily news links for guild %s switched: %s", interaction.guild.id, state.value)
+    await interaction.response.send_message(
+        f"📰 Source links are now: **{state.name}**", ephemeral=True
+    )
+
+
+@news_group.command(name="language", description="Rewrite headline bullets in casual Taglish")
+@app_commands.choices(
+    state=[
+        app_commands.Choice(name="Taglish - casual mix", value="taglish"),
+        app_commands.Choice(name="English (default)", value="english"),
+    ]
+)
+async def news_language_command(
+    interaction: discord.Interaction, state: app_commands.Choice[str]
+) -> None:
+    if not await ensure_owner(interaction):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "Run this command inside a server.", ephemeral=True
+        )
+        return
+    db.set_news_language(interaction.guild.id, state.value)
+    logger.info("Daily news language for guild %s switched: %s", interaction.guild.id, state.value)
+    await interaction.response.send_message(
+        f"📰 Headline language is now: **{state.name}**", ephemeral=True
+    )
+
+
+@news_group.command(name="show", description="Show daily news settings for this server")
+async def news_show(interaction: discord.Interaction) -> None:
+    if not await ensure_owner(interaction):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "Run this command inside a server.", ephemeral=True
+        )
+        return
+
+    enabled = db.news_enabled(interaction.guild.id)
+    channel_id = db.news_channel_id(interaction.guild.id)
+    channel_label = "not set"
+    if channel_id is not None:
+        channel = interaction.guild.get_channel(channel_id)
+        channel_label = channel.mention if channel else f"#{channel_id} (missing)"
+    links_on = news.include_links_enabled(db.news_include_links(interaction.guild.id))
+    taglish_on = news.taglish_enabled(db.news_language(interaction.guild.id))
+    last_sent = db.news_last_sent(interaction.guild.id) or "never"
+
+    await interaction.response.send_message(
+        "📰 **Daily news settings**\n"
+        f"- Enabled: **{'yes' if enabled else 'no'}**\n"
+        f"- Channel: {channel_label}\n"
+        f"- Time: **{db.news_time(interaction.guild.id)}** (local/server time)\n"
+        f"- Source links: **{'on' if links_on else 'off'}**\n"
+        f"- Language: **{'Taglish' if taglish_on else 'English'}**\n"
+        f"- Last sent: **{last_sent}**",
+        ephemeral=True,
+    )
+
+
+@news_group.command(name="now", description="Send today's news digest now for testing")
+async def news_now(interaction: discord.Interaction) -> None:
+    if not await ensure_owner(interaction):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "Run this command inside a server.", ephemeral=True
+        )
+        return
+    if db.news_channel_id(interaction.guild.id) is None:
+        await interaction.response.send_message(
+            "Set a delivery channel first with `/news channel`.", ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        taglish = news.taglish_enabled(db.news_language(interaction.guild.id))
+        ph_items, world_items = await build_daily_digest(taglish=taglish)
+        if not ph_items and not world_items:
+            await interaction.followup.send(
+                "No headlines were available right now.", ephemeral=True
+            )
+            return
+        error = await deliver_daily_news_to_guild(
+            interaction.guild, ph_items, world_items, mark_sent=True
+        )
+        if error:
+            await interaction.followup.send(error, ephemeral=True)
+            return
+        await interaction.followup.send(
+            "📰 Posted today's news digest to the configured channel.", ephemeral=True
+        )
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "I don't have permission to post in the delivery channel.", ephemeral=True
+        )
+    except Exception:
+        logger.exception("Manual daily news delivery failed for guild %s", interaction.guild.id)
+        await interaction.followup.send(
+            "Something went wrong while posting the news digest.", ephemeral=True
+        )
+
+
 # ---------------------------------------------------------------------------
 # /help - built from the live command tree, so it can never fall out of date
 # ---------------------------------------------------------------------------
@@ -3639,6 +3962,7 @@ _HELP_ICONS = {
     "remind": "⏰",
     "calendar": "📅",
     "settings": "🔧",
+    "news": "📰",
     "help": "❓",
 }
 

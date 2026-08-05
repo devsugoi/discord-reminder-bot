@@ -1167,6 +1167,81 @@ def set_guild_auto_join_enabled(guild_id: int, enabled: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Daily news digest (per-guild settings)
+# ---------------------------------------------------------------------------
+
+
+def news_enabled(guild_id: int) -> bool:
+    return get_setting(f"news_enabled_{guild_id}", "false") == "true"
+
+
+def set_news_enabled(guild_id: int, enabled: bool) -> None:
+    set_setting(f"news_enabled_{guild_id}", "true" if enabled else "false")
+
+
+def news_channel_id(guild_id: int) -> int | None:
+    val = get_setting(f"news_channel_{guild_id}", "")
+    if not val:
+        return None
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return None
+
+
+def set_news_channel_id(guild_id: int, channel_id: int | None) -> None:
+    if channel_id is None:
+        conn = _connect()
+        try:
+            conn.execute(
+                "DELETE FROM settings WHERE key = ?",
+                (f"news_channel_{guild_id}",),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return
+    set_setting(f"news_channel_{guild_id}", str(channel_id))
+
+
+def news_time(guild_id: int) -> str:
+    return get_setting(f"news_time_{guild_id}", "09:00")
+
+
+def set_news_time(guild_id: int, value: str) -> bool:
+    from news import validate_news_time
+
+    if not validate_news_time(value):
+        return False
+    set_setting(f"news_time_{guild_id}", value.strip())
+    return True
+
+
+def news_include_links(guild_id: int) -> str:
+    return get_setting(f"news_include_links_{guild_id}", "")
+
+
+def set_news_include_links(guild_id: int, enabled: bool) -> None:
+    set_setting(f"news_include_links_{guild_id}", "true" if enabled else "false")
+
+
+def news_language(guild_id: int) -> str:
+    return get_setting(f"news_language_{guild_id}", "")
+
+
+def set_news_language(guild_id: int, language: str) -> None:
+    set_setting(f"news_language_{guild_id}", language)
+
+
+def news_last_sent(guild_id: int) -> str:
+    return get_setting(f"news_last_sent_{guild_id}", "")
+
+
+def set_news_last_sent(guild_id: int, value: str) -> None:
+    set_setting(f"news_last_sent_{guild_id}", value)
+
+
+# ---------------------------------------------------------------------------
 # Helper functions for processing raffles with role-based auto-join
 # ---------------------------------------------------------------------------
 

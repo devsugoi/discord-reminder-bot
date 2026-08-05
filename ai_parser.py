@@ -857,3 +857,86 @@ async def chat_reply(
 
     logger.debug("Chat reply: %r", reply[:200])
     return reply, None
+
+
+class NewsHeadlineList(BaseModel):
+    """Shortened news headlines in the same order as the input list."""
+
+    headlines: list[str] = Field(
+        description="One shortened headline per input item, same count and order."
+    )
+
+
+async def shorten_news_headlines(headlines: list[str], *, taglish: bool = False) -> list[str] | None:
+    """Shorten headline titles for the daily news digest.
+
+    Returns a list the same length as `headlines`, or None on failure.
+    """
+    if not headlines:
+        return []
+
+    numbered = "\n".join(f"{index + 1}. {title}" for index, title in enumerate(headlines))
+    if taglish:
+        prompt = (
+            f"Rewrite each headline below as one concise news bullet in casual Taglish "
+            f"(natural mix of Tagalog and English, like Filipino group chat). "
+            f"Max 12 words each. Return exactly {len(headlines)} headlines in the same order.\n\n"
+            f"{numbered}"
+        )
+        system_instruction = (
+            "You rewrite news headlines for a Discord daily digest aimed at Filipinos. "
+            "Use casual Taglish, not formal Filipino or stiff English. "
+            "Keep proper nouns, numbers, and key facts accurate."
+        )
+    else:
+        prompt = (
+            f"Shorten each headline below to one concise news bullet (max 12 words).\n"
+            f"Return exactly {len(headlines)} headlines in the same order.\n\n"
+            f"{numbered}"
+        )
+        system_instruction = (
+            "You shorten news headlines for a Discord daily digest. "
+            "Keep facts accurate, drop fluff, and preserve the original meaning."
+        )
+    response, error_kind = await _generate_with_retry(
+        keys=chat_keys(),
+        models=_model_chain(CHATBOT_MODEL, CHATBOT_FALLBACK_MODELS),
+        contents=prompt,
+        config=genai_types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            response_mime_type="application/json",
+            response_schema=NewsHeadlineList,
+            temperature=0.2,
+            max_output_tokens=400,
+        ),
+        label="news",
+    )
+    if response is None:
+        logger.warning("News headline shortening failed: %s", error_kind)
+        return None
+
+    parsed = response.parsed
+    if parsed is None:
+        try:
+            parsed = NewsHeadlineList.model_validate_json(response.text or "")
+        except Exception:
+            logger.error("Gemini returned unparseable news output: %r", response.text)
+            return None
+
+    if len(parsed.headlines) != len(headlines):
+        logger.warning(
+            "News headline shortening returned %d items, expected %d",
+            len(parsed.headlines),
+            len(headlines),
+        )
+        return None
+
+    cleaned = [_clean_news_title(title) for title in parsed.headlines]
+    if any(not title for title in cleaned):
+        logger.warning("News headline shortening returned empty titles")
+        return None
+    return cleaned
+
+
+def _clean_news_title(value: str) -> str:
+    return " ".join(value.split()).strip()
