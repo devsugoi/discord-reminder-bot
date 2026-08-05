@@ -39,6 +39,7 @@ import ai_parser  # noqa: E402
 import calendar_sync  # noqa: E402
 import db  # noqa: E402
 import smart_memory  # noqa: E402
+import url_reading  # noqa: E402
 import video_understanding  # noqa: E402
 import web_search  # noqa: E402
 from ai_parser import (  # noqa: E402
@@ -82,6 +83,7 @@ CHATBOT_MAX_CALLS_PER_DAY = int(os.getenv("CHATBOT_MAX_CALLS_PER_DAY", "200"))
 # Seconds one person must wait between pings. 0 = no cooldown (the default).
 CHATBOT_COOLDOWN_SECONDS = int(os.getenv("CHATBOT_COOLDOWN_SECONDS", "0"))
 CHATBOT_VIDEO_MAX_CALLS_PER_DAY = video_understanding.CHATBOT_VIDEO_MAX_CALLS_PER_DAY
+CHATBOT_URL_READING_MAX_CALLS_PER_DAY = url_reading.CHATBOT_URL_READING_MAX_CALLS_PER_DAY
 
 # --- Google Calendar sync (optional - see calendar_sync.py) ----------------
 # The owner's calendar id straight from .env; friends add theirs at runtime
@@ -220,6 +222,17 @@ class ReminderBot(commands.Bot):
         if today != self._budget_date:
             return 0
         return self._budget_used.get("chat_video", 0)
+
+    def consume_url_budget(self) -> bool:
+        """Take one unit of today's link-reading budget."""
+        return self._consume_budget("chat_url", CHATBOT_URL_READING_MAX_CALLS_PER_DAY)
+
+    def url_budget_used(self) -> int:
+        """How many link-reading calls used today."""
+        today = date.today()
+        if today != self._budget_date:
+            return 0
+        return self._budget_used.get("chat_url", 0)
 
     # --- Chat cooldown ----------------------------------------------------
 
@@ -1548,6 +1561,24 @@ async def handle_chat_mention(message: discord.Message) -> None:
             video_file_uri = youtube_url
             video_mode = "youtube"
             video_file_mime = None
+
+    url_input = url_reading.prepare_urls_for_gemini(question)
+    use_url_context = bool(url_input.urls)
+    if url_input.uses_url_budget and url_input.urls:
+        if not bot.consume_url_budget():
+            await bot.notify_owner_once_today(
+                "chat_url_daily_cap",
+                "🤖 The chatbot hit its daily link-reading cap "
+                f"(CHATBOT_URL_READING_MAX_CALLS_PER_DAY={CHATBOT_URL_READING_MAX_CALLS_PER_DAY}), "
+                "so URL reading is paused until midnight. Text chat still works "
+                "if the regular chat budget remains.",
+            )
+            await say(
+                message,
+                "😴 I've read too many links today - text me instead!",
+            )
+            return
+
     search_results = None
     is_search_query = _looks_like_search_query(question)
     logger.debug(
@@ -1608,6 +1639,8 @@ async def handle_chat_mention(message: discord.Message) -> None:
                 video_file_mime=video_file_mime,
                 video_mode=video_mode,
                 youtube_url=youtube_url,
+                use_url_context=use_url_context,
+                url_count=len(url_input.urls),
                 guild_id=message.guild.id if message.guild else None,
             )
         finally:
@@ -3462,8 +3495,34 @@ async def chatbot_show(interaction: discord.Interaction) -> None:
         f"({video_used} used today)\n"
         f"- Max size: {video_understanding.CHATBOT_VIDEO_MAX_SIZE_MB} MB, "
         f"max duration: {video_understanding.CHATBOT_VIDEO_MAX_DURATION_SEC}s\n"
-        f"- ffmpeg available: **{'yes' if video_understanding.ffmpeg_available() else 'no'}**",
+        f"- ffmpeg available: **{'yes' if video_understanding.ffmpeg_available() else 'no'}**\n\n"
+        "🔗 **Link reading**\n"
+        f"- State: **{'on' if url_reading.chatbot_url_reading_is_on() else 'off'}** "
+        f"(env default: {'on' if url_reading.CHATBOT_URL_READING_ENABLED else 'off'})\n"
+        f"- Daily cap: {CHATBOT_URL_READING_MAX_CALLS_PER_DAY} "
+        f"({bot.url_budget_used()} used today)\n"
+        f"- Max links per message: {url_reading.CHATBOT_URL_READING_MAX_URLS_PER_MESSAGE}\n"
+        f"- Block private URLs: **{'yes' if url_reading.CHATBOT_URL_READING_BLOCK_PRIVATE else 'no'}**",
         ephemeral=True,
+    )
+
+
+@chatbot_group.command(name="links", description="Turn link reading on or off")
+@app_commands.choices(
+    state=[
+        app_commands.Choice(name="On - read pasted links when mentioned", value="on"),
+        app_commands.Choice(name="Off - ignore links (default)", value="off"),
+    ]
+)
+async def chatbot_links_toggle(
+    interaction: discord.Interaction, state: app_commands.Choice[str]
+) -> None:
+    if not await ensure_owner(interaction):
+        return
+    db.set_setting("chatbot_url_reading_enabled", state.value)
+    logger.info("Link reading switched: %s", state.value)
+    await interaction.response.send_message(
+        f"🔧 Link reading is now: **{state.name}**", ephemeral=True
     )
 
 

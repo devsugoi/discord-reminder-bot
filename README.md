@@ -258,6 +258,10 @@ All settings live in `.env` (copy `.env.example` and fill it in):
 | `CHATBOT_VIDEO_MAX_DURATION_SEC` | `30` | Reject longer clips (requires ffprobe when frame/duration checks are used). |
 | `CHATBOT_VIDEO_FRAME_COUNT` | `5` | Key frames to extract in frame mode. |
 | `CHATBOT_VIDEO_FILES_API_POLL_SEC` | `3` | Seconds between Files API processing polls. |
+| `CHATBOT_URL_READING_ENABLED` | `false` | Read pasted web links on @mention via Gemini URL Context. Starting value only — `/settings chatbot links` overrides it. |
+| `CHATBOT_URL_READING_MAX_CALLS_PER_DAY` | `15` | Daily cap for link reading, separate from chat and video budgets. |
+| `CHATBOT_URL_READING_MAX_URLS_PER_MESSAGE` | `3` | Max links processed per @mention. |
+| `CHATBOT_URL_READING_BLOCK_PRIVATE` | `true` | Reject localhost and private-network URLs before sending to Gemini. |
 | `CONTEXT_MESSAGES` | `8` | Recent messages sent as context with each AI call. `0` disables. |
 | `HOT_WINDOW_MINUTES` | `10` | How long keyword-less follow-ups stay AI-checked. `0` disables. |
 | `MAX_FOLLOWUPS_PER_WINDOW` | `10` | Cap on keyword-less checks per window. |
@@ -349,6 +353,18 @@ to protect free-tier quota. Turn it on with `/settings chatbot video` or set
 
 **Recommended starter profile:** master on, inline + frames on, files_api + youtube off,
 `CHATBOT_VIDEO_MAX_CALLS_PER_DAY=10`. Video uses a separate daily cap from normal chat.
+
+### Optional link reading
+
+The chatbot can read **public web links** pasted in @mention messages using Gemini's
+URL Context tool. **Off by default** (`CHATBOT_URL_READING_ENABLED=false`). Turn it on
+with `/settings chatbot links` or set `CHATBOT_URL_READING_ENABLED=true` in `.env`.
+
+- Works with public HTML pages, PDFs, images, JSON, CSV, and similar formats.
+- Does **not** work with paywalled/login-required pages, localhost, or private networks.
+- **YouTube links** are handled by the video feature (`CHATBOT_VIDEO_YOUTUBE_ENABLED`),
+  not URL Context.
+- Token-heavy — keep `CHATBOT_URL_READING_MAX_CALLS_PER_DAY` low (15 is a good default).
 
 ### Step 5 — Configure and test-run on your PC first
 

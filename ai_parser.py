@@ -635,6 +635,16 @@ VIDEO AWARENESS (active when the user sent you a video or YouTube link)
 - If the clip is blurry, dark, or hard to follow, say so.
 - NEVER invent details that aren't in the video just to sound smart."""
 
+URL_READING_SYSTEM_PROMPT = CHATBOT_SYSTEM_PROMPT + """
+
+LINK READING (active when the user pasted web links)
+- The user included URL(s) in their message. You can read those pages via URL
+  context — use the fetched content to answer.
+- If a page could not be read (paywall, login required, blocked, or broken
+  link), say so plainly instead of guessing.
+- NEVER invent page content you did not actually receive.
+- Summarize or answer the user's question based on what the link(s) contain."""
+
 
 def build_chat_payload(
     message_text: str,
@@ -645,6 +655,7 @@ def build_chat_payload(
     image_count: int = 0,
     video_mode: str | None = None,
     youtube_url: str | None = None,
+    url_count: int = 0,
 ) -> str:
     """Assemble the input for one conversational reply."""
     now = datetime.now()
@@ -688,6 +699,12 @@ def build_chat_payload(
         )
     if youtube_url and video_mode != "youtube":
         parts.append(f"YouTube link in the message: {youtube_url}")
+    if url_count > 0:
+        parts.append(
+            f"{author_name} pasted {url_count} "
+            f"{'link' if url_count == 1 else 'links'} in their message. "
+            "Read the page content from those URL(s) before replying."
+        )
     parts.append(f"{author_name} is talking to you and said:")
     parts.append(f'  "{message_text}"')
     parts.append("Reply to them.")
@@ -722,6 +739,8 @@ async def chat_reply(
     video_file_mime: str | None = None,
     video_mode: str | None = None,
     youtube_url: str | None = None,
+    use_url_context: bool = False,
+    url_count: int = 0,
     guild_id: int | None = None,
 ) -> tuple[Optional[str], Optional[str]]:
     """Answer one @mention conversationally.
@@ -742,6 +761,7 @@ async def chat_reply(
         image_count=image_count,
         video_mode=video_mode,
         youtube_url=youtube_url,
+        url_count=url_count,
     )
 
     has_video = bool(video_inline or video_file_uri or video_mode == "frames")
@@ -773,14 +793,23 @@ async def chat_reply(
                 )
         if has_video:
             base_system_prompt = VIDEO_VISION_SYSTEM_PROMPT
+        elif use_url_context:
+            base_system_prompt = URL_READING_SYSTEM_PROMPT
         else:
             base_system_prompt = IMAGE_VISION_SYSTEM_PROMPT
         contents: str | list[genai_types.Part] = contents_parts
     else:
         contents = payload
-        base_system_prompt = CHATBOT_SYSTEM_PROMPT
+        if use_url_context:
+            base_system_prompt = URL_READING_SYSTEM_PROMPT
+        else:
+            base_system_prompt = CHATBOT_SYSTEM_PROMPT
 
     system_prompt = build_chat_system_prompt(base_system_prompt, guild_id)
+
+    tools = None
+    if use_url_context:
+        tools = [genai_types.Tool(url_context=genai_types.UrlContext())]
 
     response, error_kind = await _generate_with_retry(
         keys=chat_keys(),
@@ -788,6 +817,7 @@ async def chat_reply(
         contents=contents,
         config=genai_types.GenerateContentConfig(
             system_instruction=system_prompt,
+            tools=tools,
             temperature=0.8,        # playful, unlike extraction's 0.0
             max_output_tokens=400,  # it's a chat reply - keep it short and cheap
         ),
