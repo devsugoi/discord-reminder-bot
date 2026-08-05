@@ -246,6 +246,18 @@ All settings live in `.env` (copy `.env.example` and fill it in):
 | `WEB_SEARCH_RESULT_COUNT` | `3` | How many search results to include in the prompt. Keep this small. |
 | `CHATBOT_MAX_CALLS_PER_DAY` | `200` | Daily cap for chat replies, separate from `MAX_AI_CALLS_PER_DAY` so chatter can't starve detection. |
 | `CHATBOT_COOLDOWN_SECONDS` | `0` | Seconds between pings per person; `0` = off. Starting value only — `/settings chatbot cooldown` overrides it. |
+| `CHATBOT_VIDEO_ENABLED` | `false` | Let the chatbot understand videos on @mention. Starting value only — `/settings chatbot video` overrides it. |
+| `CHATBOT_VIDEO_INLINE_ENABLED` | `true` | Send short clips inline to Gemini (under `CHATBOT_VIDEO_INLINE_MAX_MB`). Restart required. |
+| `CHATBOT_VIDEO_FRAMES_ENABLED` | `true` | Extract key frames with ffmpeg when inline/Files API can't be used. Needs `ffmpeg` + `ffprobe` on PATH. Restart required. |
+| `CHATBOT_VIDEO_FILES_API_ENABLED` | `false` | Upload larger clips via Gemini Files API (slower). Restart required. |
+| `CHATBOT_VIDEO_YOUTUBE_ENABLED` | `false` | Understand public YouTube links in message text. Restart required. |
+| `CHATBOT_VIDEO_MAX_CALLS_PER_DAY` | `10` | Daily cap for video understanding, separate from `CHATBOT_MAX_CALLS_PER_DAY`. |
+| `CHATBOT_VIDEO_MAX_PER_MESSAGE` | `1` | Max video attachments processed per @mention. |
+| `CHATBOT_VIDEO_MAX_SIZE_MB` | `10` | Reject Discord video uploads above this size. |
+| `CHATBOT_VIDEO_INLINE_MAX_MB` | `8` | Clips above this use Files API or frame extraction instead of inline. |
+| `CHATBOT_VIDEO_MAX_DURATION_SEC` | `30` | Reject longer clips (requires ffprobe when frame/duration checks are used). |
+| `CHATBOT_VIDEO_FRAME_COUNT` | `5` | Key frames to extract in frame mode. |
+| `CHATBOT_VIDEO_FILES_API_POLL_SEC` | `3` | Seconds between Files API processing polls. |
 | `CONTEXT_MESSAGES` | `8` | Recent messages sent as context with each AI call. `0` disables. |
 | `HOT_WINDOW_MINUTES` | `10` | How long keyword-less follow-ups stay AI-checked. `0` disables. |
 | `MAX_FOLLOWUPS_PER_WINDOW` | `10` | Cap on keyword-less checks per window. |
@@ -321,6 +333,22 @@ these providers in `.env`:
 
 Keep `WEB_SEARCH_RESULT_COUNT` small (3 is a good default). If `WEB_SEARCH_PROVIDER`
 is empty, the bot will still answer @mentions normally using Gemini chat.
+
+### Optional video understanding
+
+The chatbot can understand videos when @mentioned. **Off by default** (`CHATBOT_VIDEO_ENABLED=false`)
+to protect free-tier quota. Turn it on with `/settings chatbot video` or set
+`CHATBOT_VIDEO_ENABLED=true` in `.env`.
+
+| Method | Env toggle | Best for | Notes |
+|---|---|---|---|
+| **Inline** | `CHATBOT_VIDEO_INLINE_ENABLED` | Short clips under ~8 MB | Cheapest; real video + audio |
+| **Frame extraction** | `CHATBOT_VIDEO_FRAMES_ENABLED` | Larger clips when Files API is off | Needs [ffmpeg](https://ffmpeg.org/) on PATH; no audio |
+| **Files API** | `CHATBOT_VIDEO_FILES_API_ENABLED` | Clips above inline limit | Slower upload; uses Gemini file storage |
+| **YouTube URLs** | `CHATBOT_VIDEO_YOUTUBE_ENABLED` | Public YouTube links in text | No download; public videos only |
+
+**Recommended starter profile:** master on, inline + frames on, files_api + youtube off,
+`CHATBOT_VIDEO_MAX_CALLS_PER_DAY=10`. Video uses a separate daily cap from normal chat.
 
 ### Step 5 — Configure and test-run on your PC first
 

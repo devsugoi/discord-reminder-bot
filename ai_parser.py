@@ -623,6 +623,18 @@ IMAGE AWARENESS (active only when the user sent you a picture)
 - NEVER invent details that aren't visible just to sound smart. If you can't
   tell what something is, own it."""
 
+VIDEO_VISION_SYSTEM_PROMPT = CHATBOT_SYSTEM_PROMPT + """
+
+VIDEO AWARENESS (active when the user sent you a video or YouTube link)
+- You CAN see/hear the video they shared. Describe what happens: the main
+  action, setting, people, objects, dialogue, music, or anything notable.
+- If they asked a question about the video, answer it directly.
+- If they sent a video with no question, give a brief summary in your usual tone.
+- If you only received extracted still frames (not full video), say you're
+  working from snapshots and may miss motion or audio.
+- If the clip is blurry, dark, or hard to follow, say so.
+- NEVER invent details that aren't in the video just to sound smart."""
+
 
 def build_chat_payload(
     message_text: str,
@@ -631,6 +643,8 @@ def build_chat_payload(
     context_lines: list[str],
     search_results: str | None = None,
     image_count: int = 0,
+    video_mode: str | None = None,
+    youtube_url: str | None = None,
 ) -> str:
     """Assemble the input for one conversational reply."""
     now = datetime.now()
@@ -650,11 +664,30 @@ def build_chat_payload(
         parts.append(search_results)
     if image_count > 0:
         pronoun = "it" if image_count == 1 else "them"
+        if video_mode == "frames":
+            parts.append(
+                f"{author_name} sent you a video, but you only received "
+                f"{image_count} extracted still frame{'s' if image_count != 1 else ''}. "
+                f"Use {pronoun} to infer what the video shows."
+            )
+        else:
+            parts.append(
+                f"{author_name} sent you {image_count} "
+                f"{'image' if image_count == 1 else 'images'} along with this message. "
+                f"Look at {pronoun} carefully."
+            )
+    if video_mode and video_mode != "frames":
+        mode_labels = {
+            "inline": "a short video clip",
+            "files_api": "a video clip",
+            "youtube": "a YouTube link",
+        }
+        label = mode_labels.get(video_mode, "a video")
         parts.append(
-            f"{author_name} sent you {image_count} "
-            f"{'image' if image_count == 1 else 'images'} along with this message. "
-            f"Look at {pronoun} carefully."
+            f"{author_name} also sent you {label}. Watch it carefully before replying."
         )
+    if youtube_url and video_mode != "youtube":
+        parts.append(f"YouTube link in the message: {youtube_url}")
     parts.append(f"{author_name} is talking to you and said:")
     parts.append(f'  "{message_text}"')
     parts.append("Reply to them.")
@@ -684,6 +717,11 @@ async def chat_reply(
     context_lines: list[str],
     search_results: str | None = None,
     image_datas: list[tuple[bytes, str]] | None = None,
+    video_inline: tuple[bytes, str] | None = None,
+    video_file_uri: str | None = None,
+    video_file_mime: str | None = None,
+    video_mode: str | None = None,
+    youtube_url: str | None = None,
     guild_id: int | None = None,
 ) -> tuple[Optional[str], Optional[str]]:
     """Answer one @mention conversationally.
@@ -702,17 +740,41 @@ async def chat_reply(
         context_lines=context_lines,
         search_results=search_results,
         image_count=image_count,
+        video_mode=video_mode,
+        youtube_url=youtube_url,
     )
 
-    # When images are attached, build multimodal contents (text Part + image Parts)
-    # and switch to the vision-aware system prompt.
-    if image_datas:
-        contents_parts = [genai_types.Part.from_text(text=payload)]
-        for img_bytes, mime_type in image_datas:
+    has_video = bool(video_inline or video_file_uri or video_mode == "frames")
+    has_images = bool(image_datas)
+
+    if has_video or has_images:
+        contents_parts: list[genai_types.Part] = [genai_types.Part.from_text(text=payload)]
+        if image_datas:
+            for img_bytes, mime_type in image_datas:
+                contents_parts.append(
+                    genai_types.Part.from_bytes(data=img_bytes, mime_type=mime_type)
+                )
+        if video_inline:
+            video_bytes, video_mime = video_inline
             contents_parts.append(
-                genai_types.Part.from_bytes(data=img_bytes, mime_type=mime_type)
+                genai_types.Part.from_bytes(data=video_bytes, mime_type=video_mime)
             )
-        base_system_prompt = IMAGE_VISION_SYSTEM_PROMPT
+        if video_file_uri:
+            if video_mode == "youtube":
+                contents_parts.append(
+                    genai_types.Part.from_uri(file_uri=video_file_uri)
+                )
+            else:
+                contents_parts.append(
+                    genai_types.Part.from_uri(
+                        file_uri=video_file_uri,
+                        mime_type=video_file_mime or "video/mp4",
+                    )
+                )
+        if has_video:
+            base_system_prompt = VIDEO_VISION_SYSTEM_PROMPT
+        else:
+            base_system_prompt = IMAGE_VISION_SYSTEM_PROMPT
         contents: str | list[genai_types.Part] = contents_parts
     else:
         contents = payload

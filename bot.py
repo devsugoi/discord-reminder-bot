@@ -39,6 +39,7 @@ import ai_parser  # noqa: E402
 import calendar_sync  # noqa: E402
 import db  # noqa: E402
 import smart_memory  # noqa: E402
+import video_understanding  # noqa: E402
 import web_search  # noqa: E402
 from ai_parser import (  # noqa: E402
     CHATBOT_FALLBACK_MODELS,
@@ -80,6 +81,7 @@ CHATBOT_ENABLED = os.getenv("CHATBOT_ENABLED", "true").strip().lower() in ("1", 
 CHATBOT_MAX_CALLS_PER_DAY = int(os.getenv("CHATBOT_MAX_CALLS_PER_DAY", "200"))
 # Seconds one person must wait between pings. 0 = no cooldown (the default).
 CHATBOT_COOLDOWN_SECONDS = int(os.getenv("CHATBOT_COOLDOWN_SECONDS", "0"))
+CHATBOT_VIDEO_MAX_CALLS_PER_DAY = video_understanding.CHATBOT_VIDEO_MAX_CALLS_PER_DAY
 
 # --- Google Calendar sync (optional - see calendar_sync.py) ----------------
 # The owner's calendar id straight from .env; friends add theirs at runtime
@@ -207,6 +209,17 @@ class ReminderBot(commands.Bot):
     def consume_chat_budget(self) -> bool:
         """Take one unit of today's chatbot budget (its own key and cap)."""
         return self._consume_budget("chat", CHATBOT_MAX_CALLS_PER_DAY)
+
+    def consume_video_budget(self) -> bool:
+        """Take one unit of today's video-understanding budget."""
+        return self._consume_budget("chat_video", CHATBOT_VIDEO_MAX_CALLS_PER_DAY)
+
+    def video_budget_used(self) -> int:
+        """How many video-understanding calls used today."""
+        today = date.today()
+        if today != self._budget_date:
+            return 0
+        return self._budget_used.get("chat_video", 0)
 
     # --- Chat cooldown ----------------------------------------------------
 
@@ -1435,7 +1448,71 @@ async def handle_chat_mention(message: discord.Message) -> None:
     # Check for image attachments - download them so the AI can "see" them.
     # Capped at 3 images to keep token usage reasonable.
     image_datas: list[tuple[bytes, str]] = []
+    video_inline: tuple[bytes, str] | None = None
+    video_file_uri: str | None = None
+    video_file_mime: str | None = None
+    video_mode: str | None = None
+    youtube_url: str | None = None
+    video_skip_note: str | None = None
+    files_api_upload: tuple[bytes, str, str] | None = None
+    had_video_attachment = False
+
     for attachment in message.attachments:
+        if video_understanding.video_enabled() and video_understanding.is_video_attachment(
+            attachment.content_type, attachment.filename or ""
+        ):
+            if had_video_attachment:
+                continue
+            had_video_attachment = True
+            try:
+                video_bytes = await attachment.read()
+                mime = video_understanding.guess_video_mime(
+                    attachment.content_type, attachment.filename or "video.mp4"
+                )
+                prepared = video_understanding.prepare_video_for_gemini(
+                    video_bytes, mime, attachment.filename or "video.mp4"
+                )
+                if prepared.error_message:
+                    video_skip_note = prepared.error_message
+                elif prepared.uses_video_budget and not bot.consume_video_budget():
+                    await bot.notify_owner_once_today(
+                        "chat_video_daily_cap",
+                        "🤖 The chatbot hit its daily video cap "
+                        f"(CHATBOT_VIDEO_MAX_CALLS_PER_DAY={CHATBOT_VIDEO_MAX_CALLS_PER_DAY}), "
+                        "so video understanding is paused until midnight. Text chat "
+                        "still works if the regular chat budget remains.",
+                    )
+                    await say(
+                        message,
+                        "😴 my eyes are tired from too many videos today - text me instead!",
+                    )
+                    return
+                elif prepared.mode == "inline" and prepared.inline:
+                    video_inline = prepared.inline
+                    video_mode = "inline"
+                elif prepared.mode == "files_api" and prepared.inline:
+                    files_api_upload = (
+                        prepared.inline[0],
+                        prepared.inline[1],
+                        attachment.filename or "video.mp4",
+                    )
+                    video_mode = "files_api"
+                elif prepared.mode == "frames" and prepared.frames:
+                    video_mode = "frames"
+                    for frame_bytes, frame_mime in prepared.frames:
+                        if len(image_datas) >= 3:
+                            break
+                        image_datas.append((frame_bytes, frame_mime))
+                logger.debug(
+                    "Video attachment %s prepared as mode=%s",
+                    attachment.filename,
+                    prepared.mode,
+                )
+            except (discord.HTTPException, discord.NotFound) as exc:
+                logger.warning("Could not download video %s: %s", attachment.filename, exc)
+                video_skip_note = "I couldn't download that video."
+            continue
+
         if len(image_datas) >= 3:
             break
         if attachment.content_type and attachment.content_type.startswith("image/"):
@@ -1448,6 +1525,29 @@ async def handle_chat_mention(message: discord.Message) -> None:
                 )
             except (discord.HTTPException, discord.NotFound) as exc:
                 logger.warning("Could not download attachment %s: %s", attachment.filename, exc)
+
+    if (
+        video_understanding.video_enabled()
+        and not had_video_attachment
+        and video_understanding.youtube_enabled()
+    ):
+        youtube_url = video_understanding.extract_youtube_url(question)
+        if youtube_url:
+            if not bot.consume_video_budget():
+                await bot.notify_owner_once_today(
+                    "chat_video_daily_cap",
+                    "🤖 The chatbot hit its daily video cap "
+                    f"(CHATBOT_VIDEO_MAX_CALLS_PER_DAY={CHATBOT_VIDEO_MAX_CALLS_PER_DAY}), "
+                    "so video understanding is paused until midnight.",
+                )
+                await say(
+                    message,
+                    "😴 my eyes are tired from too many videos today - text me instead!",
+                )
+                return
+            video_file_uri = youtube_url
+            video_mode = "youtube"
+            video_file_mime = None
     search_results = None
     is_search_query = _looks_like_search_query(question)
     logger.debug(
@@ -1483,15 +1583,39 @@ async def handle_chat_mention(message: discord.Message) -> None:
             else None
         )
 
-        reply, error_kind = await chat_reply(
-            message_text=question or "(they pinged you without saying anything)",
-            author_name=message.author.display_name,
-            bot_name=bot.user.display_name,
-            context_lines=context_lines,
-            search_results=search_results,
-            image_datas=image_datas or None,
-            guild_id=message.guild.id if message.guild else None,
-        )
+        uploaded_file_name: str | None = None
+        try:
+            if files_api_upload and video_mode == "files_api":
+                upload_bytes, upload_mime, upload_name = files_api_upload
+                chat_client = ai_parser._client_for(ai_parser.chat_keys()[0])
+                video_file_uri, uploaded_file_name = await video_understanding.upload_to_files_api(
+                    chat_client,
+                    upload_bytes,
+                    upload_mime,
+                    upload_name,
+                )
+                video_file_mime = upload_mime
+
+            reply, error_kind = await chat_reply(
+                message_text=question or "(they pinged you without saying anything)",
+                author_name=message.author.display_name,
+                bot_name=bot.user.display_name,
+                context_lines=context_lines,
+                search_results=search_results,
+                image_datas=image_datas or None,
+                video_inline=video_inline,
+                video_file_uri=video_file_uri,
+                video_file_mime=video_file_mime,
+                video_mode=video_mode,
+                youtube_url=youtube_url,
+                guild_id=message.guild.id if message.guild else None,
+            )
+        finally:
+            if uploaded_file_name:
+                await video_understanding.delete_uploaded_file(
+                    ai_parser._client_for(ai_parser.chat_keys()[0]),
+                    uploaded_file_name,
+                )
     if error_kind == "quota":
         await bot.notify_owner_once_today(
             "chat_quota",
@@ -1548,6 +1672,8 @@ async def handle_chat_mention(message: discord.Message) -> None:
 
 
     logger.info("Chat reply to %s in channel %s", message.author.name, message.channel.id)
+    if video_skip_note and had_video_attachment:
+        reply = f"{video_skip_note}\n\n{reply}"
     await say(message, reply, allowed_mentions=allowed_mentions)
 
     # Update compact server context when the exchange may contain standing rules
@@ -3309,6 +3435,17 @@ async def chatbot_show(interaction: discord.Interaction) -> None:
         if CHATBOT_FALLBACK_MODELS and any(CHATBOT_FALLBACK_MODELS)
         else ""
     )
+    video_used = bot.video_budget_used()
+    video_methods = []
+    if video_understanding.inline_enabled():
+        video_methods.append("inline")
+    if video_understanding.frames_enabled():
+        video_methods.append("frames")
+    if video_understanding.files_api_enabled():
+        video_methods.append("files_api")
+    if video_understanding.youtube_enabled():
+        video_methods.append("youtube")
+    methods_text = ", ".join(video_methods) if video_methods else "none"
     await interaction.response.send_message(
         "💬 **Chat replies**\n"
         f"- State: **{'on' if chatbot_is_on() else 'off'}**\n"
@@ -3316,8 +3453,36 @@ async def chatbot_show(interaction: discord.Interaction) -> None:
         f"- API key: {key_text}\n"
         f"- Daily cap: {CHATBOT_MAX_CALLS_PER_DAY} replies\n"
         f"- Cooldown: {f'{cooldown}s per person' if cooldown else 'off'}\n"
-        f"- Muted channels: {_mute_list_text()}",
+        f"- Muted channels: {_mute_list_text()}\n\n"
+        "🎬 **Video understanding**\n"
+        f"- State: **{'on' if video_understanding.chatbot_video_is_on() else 'off'}** "
+        f"(env default: {'on' if video_understanding.CHATBOT_VIDEO_ENABLED else 'off'})\n"
+        f"- Methods enabled: {methods_text}\n"
+        f"- Daily cap: {CHATBOT_VIDEO_MAX_CALLS_PER_DAY} "
+        f"({video_used} used today)\n"
+        f"- Max size: {video_understanding.CHATBOT_VIDEO_MAX_SIZE_MB} MB, "
+        f"max duration: {video_understanding.CHATBOT_VIDEO_MAX_DURATION_SEC}s\n"
+        f"- ffmpeg available: **{'yes' if video_understanding.ffmpeg_available() else 'no'}**",
         ephemeral=True,
+    )
+
+
+@chatbot_group.command(name="video", description="Turn video understanding on or off")
+@app_commands.choices(
+    state=[
+        app_commands.Choice(name="On - recognize videos when mentioned", value="on"),
+        app_commands.Choice(name="Off - ignore videos (default)", value="off"),
+    ]
+)
+async def chatbot_video_toggle(
+    interaction: discord.Interaction, state: app_commands.Choice[str]
+) -> None:
+    if not await ensure_owner(interaction):
+        return
+    db.set_setting("chatbot_video_enabled", state.value)
+    logger.info("Video understanding switched: %s", state.value)
+    await interaction.response.send_message(
+        f"🔧 Video understanding is now: **{state.name}**", ephemeral=True
     )
 
 
